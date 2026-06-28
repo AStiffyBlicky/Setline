@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#111714" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Setline" />
+    <meta
+      name="description"
+      content="A focused, offline workout tracker for strength sessions and cardio intervals."
+    />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <title>Setline — Workout log</title>
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <main id="app-view" aria-live="polite"></main>
+      <nav id="bottom-nav" class="bottom-nav" aria-label="Primary navigation">
+        <button class="nav-item is-active" data-route="home" aria-label="Train">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 9v6M7 7v10M17 7v10M20 9v6M7 12h10" />
+          </svg>
+          <span>Train</span>
+        </button>
+        <button class="nav-item" data-route="history" aria-label="History">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3.5 12a8.5 8.5 0 1 0 2.49-6.01L3.5 8.5M3.5 4.5v4h4M12 7.5V12l3 2" />
+          </svg>
+          <span>History</span>
+        </button>
+        <button class="nav-item" data-route="library" aria-label="Exercise library">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5" />
+          </svg>
+          <span>Library</span>
+        </button>
+      </nav>
+    </div>
+
+    <div id="modal-root"></div>
+    <div id="toast-root" class="toast-root" aria-live="assertive"></div>
+
+    <template id="icon-template">
+      <svg viewBox="0 0 24 24" aria-hidden="true"></svg>
+    </template>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
