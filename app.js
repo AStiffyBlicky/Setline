@@ -5,25 +5,31 @@ const CATEGORY_META = {
     label: "Push",
     subtitle: "Chest · triceps · shoulders",
     muscles: ["chest", "triceps", "shoulders"],
-    color: "#f16d46",
+    color: "#c77dff",
   },
   pull: {
     label: "Pull",
     subtitle: "Biceps · back · forearms",
     muscles: ["biceps", "back", "forearms"],
-    color: "#5b79dc",
+    color: "#8f82ff",
   },
   legs: {
     label: "Legs",
     subtitle: "Hamstrings · glutes · quads · more",
     muscles: ["hamstrings", "glutes", "quads", "calves", "inner / outer thigh"],
-    color: "#b46bd1",
+    color: "#e078b5",
+  },
+  core: {
+    label: "Core",
+    subtitle: "Abs · obliques · stability",
+    muscles: ["abs", "obliques", "stability"],
+    color: "#a970ff",
   },
   cardio: {
     label: "Cardio",
     subtitle: "Intervals · activities · notes",
     muscles: ["activity"],
-    color: "#3a9a74",
+    color: "#63c6b0",
   },
 };
 
@@ -45,6 +51,11 @@ const DEFAULT_EXERCISES = {
     calves: ["Standing Calf Raise", "Seated Calf Raise", "Single-Leg Calf Raise"],
     "inner / outer thigh": ["Hip Adduction", "Hip Abduction", "Lateral Lunge", "Cossack Squat"],
   },
+  core: {
+    abs: ["Crunch", "Reverse Crunch", "Hanging Leg Raise", "Ab Wheel Rollout", "V-Up"],
+    obliques: ["Russian Twist", "Side Plank", "Cable Woodchop", "Bicycle Crunch", "Suitcase Carry"],
+    stability: ["Plank", "Dead Bug", "Bird Dog", "Pallof Press", "Hollow Hold"],
+  },
   cardio: {
     activity: ["Running", "Cycling", "Walking", "Rowing", "Stair Climber", "Elliptical", "Jump Rope"],
   },
@@ -53,6 +64,7 @@ const DEFAULT_EXERCISES = {
 const state = {
   route: "home",
   currentSession: null,
+  selectedCategory: null,
   selectedMuscle: null,
   historyFilter: "all",
   detailId: null,
@@ -64,11 +76,34 @@ let data = loadData();
 
 function defaultData() {
   return {
-    version: 1,
+    version: 2,
     workouts: [],
     customExercises: [],
+    hiddenExercises: [],
     draft: null,
     unit: "lb",
+    currentWeight: "",
+    weightUpdatedAt: null,
+  };
+}
+
+function normalizeEntry(entry, fallbackCategory) {
+  const category = entry.category || (entry.type === "cardio" ? "cardio" : fallbackCategory) || "push";
+  return {
+    ...entry,
+    category,
+    sameReps: entry.type === "strength" ? Boolean(entry.sameReps) : undefined,
+  };
+}
+
+function normalizeWorkout(workout) {
+  const fallbackCategory = CATEGORY_META[workout.category] ? workout.category : "push";
+  return {
+    ...workout,
+    category: fallbackCategory,
+    exercises: Array.isArray(workout.exercises)
+      ? workout.exercises.map((entry) => normalizeEntry(entry, fallbackCategory))
+      : [],
   };
 }
 
@@ -80,8 +115,11 @@ function loadData() {
     return {
       ...defaultData(),
       ...saved,
-      workouts: Array.isArray(saved.workouts) ? saved.workouts : [],
+      version: 2,
+      workouts: Array.isArray(saved.workouts) ? saved.workouts.map(normalizeWorkout) : [],
       customExercises: Array.isArray(saved.customExercises) ? saved.customExercises : [],
+      hiddenExercises: Array.isArray(saved.hiddenExercises) ? saved.hiddenExercises : [],
+      draft: saved.draft ? normalizeWorkout(saved.draft) : null,
     };
   } catch {
     return defaultData();
@@ -123,6 +161,7 @@ function categoryIcon(category) {
     push: '<path d="M4 9v6M7 7v10M17 7v10M20 9v6M7 12h10"/>',
     pull: '<path d="M5 4v5a7 7 0 0 0 14 0V4M5 8h4M15 8h4M12 16v4M9 20h6"/>',
     legs: '<path d="M9 3v7l-3 4v7M15 3v7l3 4v7M9 10h6M6 17h4M14 17h4"/>',
+    core: '<path d="M8 4c1.5 1 2.8 1.5 4 1.5S14.5 5 16 4M8 20c1.5-1 2.8-1.5 4-1.5s2.5.5 4 1.5M9 6.5 8 17.5M15 6.5l1 11M8.5 12h7"/>',
     cardio: '<path d="M3 13h4l2-6 4 11 3-8 2 3h3"/><path d="M4 5.5A5 5 0 0 1 12 7a5 5 0 0 1 8-1.5"/>',
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[category]}</svg>`;
@@ -165,18 +204,48 @@ function relativeDate(value) {
   return formatDate(value, { year: then.getFullYear() !== today.getFullYear() });
 }
 
-function allExercises(category, muscle) {
+function allExercises(category, muscle, options = {}) {
   const builtIns = (DEFAULT_EXERCISES[category]?.[muscle] || []).map((name) => ({
     id: `default-${slugify(category)}-${slugify(muscle)}-${slugify(name)}`,
     name,
     category,
     muscle,
     custom: false,
-  }));
+  })).filter((exercise) => options.includeHidden || !data.hiddenExercises.includes(exercise.id));
   const custom = data.customExercises.filter(
     (exercise) => exercise.category === category && exercise.muscle === muscle
   );
   return [...builtIns, ...custom].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function workoutCategories(workout) {
+  const categories = [
+    ...new Set(
+      (workout.exercises || [])
+        .map((entry) => entry.category || workout.category)
+        .filter((category) => CATEGORY_META[category])
+    ),
+  ];
+  return categories.length ? categories : [workout.category || "push"];
+}
+
+function workoutLabel(workout) {
+  const categories = workoutCategories(workout);
+  return categories.length > 1
+    ? "Mixed"
+    : CATEGORY_META[categories[0]]?.label || "Workout";
+}
+
+function getExerciseById(exerciseId) {
+  for (const category of Object.keys(CATEGORY_META)) {
+    for (const muscle of CATEGORY_META[category].muscles) {
+      const exercise = allExercises(category, muscle, { includeHidden: true }).find(
+        (item) => item.id === exerciseId
+      );
+      if (exercise) return exercise;
+    }
+  }
+  return null;
 }
 
 function findPreviousEntry(exerciseId) {
@@ -235,7 +304,7 @@ function renderHome() {
           <button class="quick-stat" data-action="resume-draft" style="width:100%; text-align:left; cursor:pointer;">
             <span class="stat-icon">↗</span>
             <span>
-              <strong>Resume ${escapeHtml(CATEGORY_META[draft.category].label)} session</strong>
+              <strong>Resume ${escapeHtml(workoutLabel(draft))} session</strong>
               <span>${draft.exercises.length} ${draft.exercises.length === 1 ? "exercise" : "exercises"} in progress</span>
             </span>
           </button>
@@ -276,12 +345,19 @@ function renderHome() {
       </span>
     </div>
     <div class="quick-stat">
-      <span class="stat-icon">${last ? CATEGORY_META[last.category].label.charAt(0) : "—"}</span>
+      <span class="stat-icon">${last ? workoutLabel(last).charAt(0) : "—"}</span>
       <span>
-        <strong>${last ? `Last: ${CATEGORY_META[last.category].label}` : "No workouts logged yet"}</strong>
+        <strong>${last ? `Last: ${workoutLabel(last)}` : "No workouts logged yet"}</strong>
         <span>${last ? `${relativeDate(last.completedAt || last.startedAt)} · ${last.exercises.length} ${last.exercises.length === 1 ? "exercise" : "exercises"}` : "Your first entry will appear here."}</span>
       </span>
     </div>
+    <button class="quick-stat body-weight-stat" data-action="open-settings">
+      <span class="stat-icon">BW</span>
+      <span>
+        <strong>${data.currentWeight ? `${escapeHtml(data.currentWeight)} ${data.unit}` : "Add your current weight"}</strong>
+        <span>${data.weightUpdatedAt ? `Updated ${relativeDate(data.weightUpdatedAt)}` : "Keep your latest body weight close at hand."}</span>
+      </span>
+    </button>
 
     <div id="install-card" class="install-card ${state.deferredInstallPrompt ? "is-visible" : ""}">
       <span>
@@ -300,14 +376,15 @@ function createSession(category) {
     startedAt: new Date().toISOString(),
     completedAt: null,
     notes: "",
+    bodyWeight: data.currentWeight || "",
     exercises: [],
   };
 }
 
 function startSession(category) {
-  if (data.draft && data.draft.category !== category) {
+  if (data.draft) {
     const replace = window.confirm(
-      `You have an unfinished ${CATEGORY_META[data.draft.category].label} session. Start a new one instead?`
+      `You have an unfinished ${workoutLabel(data.draft)} session. Start a new one instead?`
     );
     if (!replace) {
       resumeDraft();
@@ -315,6 +392,7 @@ function startSession(category) {
     }
   }
   state.currentSession = createSession(category);
+  state.selectedCategory = category;
   state.selectedMuscle = CATEGORY_META[category].muscles[0];
   data.draft = state.currentSession;
   saveData();
@@ -325,6 +403,7 @@ function startSession(category) {
 function resumeDraft() {
   if (!data.draft) return;
   state.currentSession = data.draft;
+  state.selectedCategory = data.draft.category;
   state.selectedMuscle = CATEGORY_META[data.draft.category].muscles[0];
   state.route = "session";
   render();
@@ -337,31 +416,60 @@ function renderSession() {
     return renderHome();
   }
   state.currentSession = session;
-  const meta = CATEGORY_META[session.category];
-  const muscle = state.selectedMuscle || meta.muscles[0];
-  const exercises = allExercises(session.category, muscle);
-  const isCardio = session.category === "cardio";
+  const selectedCategory = CATEGORY_META[state.selectedCategory]
+    ? state.selectedCategory
+    : session.category;
+  state.selectedCategory = selectedCategory;
+  const selectedMeta = CATEGORY_META[selectedCategory];
+  const muscle = selectedMeta.muscles.includes(state.selectedMuscle)
+    ? state.selectedMuscle
+    : selectedMeta.muscles[0];
+  state.selectedMuscle = muscle;
+  const exercises = allExercises(selectedCategory, muscle);
+  const isCardio = selectedCategory === "cardio";
+  const usedCategories = workoutCategories(session);
+  const displayLabel = workoutLabel(session);
+  const heroColor = usedCategories.length > 1 ? "#ad7cff" : CATEGORY_META[usedCategories[0]].color;
 
   return `
     <header class="session-header">
       <button class="icon-button" data-action="leave-session" aria-label="Back">‹</button>
       <div class="session-title">
-        <strong>${meta.label} session</strong>
+        <strong>${displayLabel} session</strong>
         <span>${formatTime(session.startedAt)} · ${session.exercises.length} added</span>
       </div>
       <button class="icon-button" data-action="discard-session" aria-label="Discard session">×</button>
     </header>
 
-    <section class="session-hero" style="--tone:${meta.color}">
+    <section class="session-hero" style="--tone:${heroColor}">
       <p>In progress</p>
-      <h1>${meta.label} day</h1>
+      <h1>${displayLabel} workout</h1>
+      ${
+        session.exercises.length
+          ? `<div class="hero-categories">${usedCategories
+              .map((category) => `<span>${CATEGORY_META[category].label}</span>`)
+              .join("")}</div>`
+          : ""
+      }
     </section>
+
+    <div class="muscle-tabs category-tabs" aria-label="Exercise category">
+      ${Object.entries(CATEGORY_META)
+        .map(
+          ([category, meta]) => `
+            <button class="chip ${category === selectedCategory ? "is-active" : ""}" data-action="select-session-category" data-category="${category}">
+              ${meta.label}
+            </button>
+          `
+        )
+        .join("")}
+    </div>
 
     ${
       !isCardio
         ? `
-          <div class="muscle-tabs" aria-label="Muscle group">
-            ${meta.muscles
+          <div class="muscle-tabs subgroup-tabs" aria-label="Muscle group">
+            ${selectedMeta.muscles
               .map(
                 (item) => `
                   <button class="chip ${item === muscle ? "is-active" : ""}" data-action="select-muscle" data-muscle="${escapeAttr(item)}">
@@ -372,7 +480,7 @@ function renderSession() {
               .join("")}
           </div>
         `
-        : `<div style="height:17px"></div>`
+        : ""
     }
 
     <section class="exercise-picker">
@@ -392,7 +500,7 @@ function renderSession() {
       </div>
       <div class="picker-actions">
         <span>${exercises.length} ${isCardio ? "activities" : "exercises"} available</span>
-        <button class="text-button" data-action="open-add-exercise" data-category="${session.category}" data-muscle="${escapeAttr(muscle)}">
+        <button class="text-button" data-action="open-add-exercise" data-category="${selectedCategory}" data-muscle="${escapeAttr(muscle)}">
           + Create your own
         </button>
       </div>
@@ -402,21 +510,45 @@ function renderSession() {
       ${
         session.exercises.length
           ? session.exercises
-              .map((entry) =>
-                isCardio ? renderCardioEntry(entry) : renderStrengthEntry(entry)
-              )
+              .map((entry) => entry.type === "cardio" ? renderCardioEntry(entry) : renderStrengthEntry(entry))
               .join("")
           : `
             <div class="empty-state">
-              <span class="empty-state-icon">${isCardio ? "⏱" : "+"}</span>
-              <h3>${isCardio ? "Add your first activity" : "Add your first exercise"}</h3>
-              <p>${isCardio ? "Build timed intervals and leave a note on each one." : "Each set can have its own weight and rep target."}</p>
+              <span class="empty-state-icon">+</span>
+              <h3>Add your first exercise</h3>
+              <p>Start anywhere. You can mix categories freely in the same workout.</p>
             </div>
           `
       }
     </div>
 
+    ${
+      session.exercises.length
+        ? `
+          <section class="bottom-add-card">
+            <button class="primary-button accent" data-action="open-add-entry-modal">+ Add another exercise</button>
+            <span>Choose from Push, Pull, Legs, Core, or Cardio.</span>
+          </section>
+        `
+        : ""
+    }
+
     <section class="session-note">
+      <label for="session-body-weight">Current body weight</label>
+      <div class="input-with-unit session-weight-input">
+        <input
+          id="session-body-weight"
+          class="number-input"
+          type="number"
+          min="0"
+          step="0.1"
+          inputmode="decimal"
+          value="${escapeAttr(session.bodyWeight || "")}"
+          placeholder="Optional"
+          data-action="update-session-weight"
+        />
+        <span>${data.unit}</span>
+      </div>
       <label for="session-notes">Session notes</label>
       <textarea id="session-notes" data-action="update-session-notes" placeholder="Energy, wins, things to remember…">${escapeHtml(session.notes || "")}</textarea>
     </section>
@@ -437,7 +569,7 @@ function renderStrengthEntry(entry) {
       <div class="exercise-card-head">
         <span>
           <h3>${escapeHtml(entry.name)}</h3>
-          <p>${escapeHtml(entry.muscle)} · ${entry.sets.length} ${entry.sets.length === 1 ? "set" : "sets"}</p>
+          <p><span class="category-tag">${CATEGORY_META[entry.category]?.label || "Strength"}</span> ${escapeHtml(entry.muscle)} · ${entry.sets.length} ${entry.sets.length === 1 ? "set" : "sets"}</p>
         </span>
         <button class="mini-menu" data-action="remove-entry" data-entry-id="${escapeAttr(entry.entryId)}" aria-label="Remove ${escapeAttr(entry.name)}">×</button>
       </div>
@@ -453,6 +585,17 @@ function renderStrengthEntry(entry) {
           role="switch"
           aria-checked="${entry.sameWeight}"
           aria-label="Use the same weight for every set"
+        ></button>
+      </div>
+      <div class="same-weight-row">
+        <span>Use first-set reps for all sets</span>
+        <button
+          class="switch ${entry.sameReps ? "is-on" : ""}"
+          data-action="toggle-same-reps"
+          data-entry-id="${escapeAttr(entry.entryId)}"
+          role="switch"
+          aria-checked="${Boolean(entry.sameReps)}"
+          aria-label="Use the same reps for every set"
         ></button>
       </div>
 
@@ -562,7 +705,7 @@ function renderCardioEntry(entry) {
       <div class="exercise-card-head">
         <span>
           <h3>${escapeHtml(entry.name)}</h3>
-          <p>${entry.intervals.length} ${entry.intervals.length === 1 ? "interval" : "intervals"}</p>
+          <p><span class="category-tag">Cardio</span> ${entry.intervals.length} ${entry.intervals.length === 1 ? "interval" : "intervals"}</p>
         </span>
         <button class="mini-menu" data-action="remove-entry" data-entry-id="${escapeAttr(entry.entryId)}" aria-label="Remove ${escapeAttr(entry.name)}">×</button>
       </div>
@@ -636,13 +779,17 @@ function persistDraft() {
 
 function addEntry() {
   const select = document.querySelector("#exercise-picker-select");
+  const category = state.selectedCategory || state.currentSession.category;
   if (!select?.value) {
-    toast(state.currentSession.category === "cardio" ? "Choose an activity first" : "Choose an exercise first");
+    toast(category === "cardio" ? "Choose an activity first" : "Choose an exercise first");
     return;
   }
-  const category = state.currentSession.category;
   const muscle = state.selectedMuscle || CATEGORY_META[category].muscles[0];
-  const exercise = allExercises(category, muscle).find((item) => item.id === select.value);
+  addEntryById(category, muscle, select.value);
+}
+
+function addEntryById(category, muscle, exerciseId, options = {}) {
+  const exercise = allExercises(category, muscle).find((item) => item.id === exerciseId);
   if (!exercise) return;
   const existing = state.currentSession.exercises.find((entry) => entry.exerciseId === exercise.id);
   if (existing) {
@@ -660,6 +807,7 @@ function addEntry() {
           exerciseId: exercise.id,
           name: exercise.name,
           muscle: "activity",
+          category,
           type: "cardio",
           intervals: [{ minutes: "", seconds: "", note: "" }],
         }
@@ -668,8 +816,10 @@ function addEntry() {
           exerciseId: exercise.id,
           name: exercise.name,
           muscle: exercise.muscle,
+          category,
           type: "strength",
           sameWeight: true,
+          sameReps: false,
           sets: [
             { weight: "", reps: "" },
             { weight: "", reps: "" },
@@ -678,6 +828,7 @@ function addEntry() {
         }
   );
   persistDraft();
+  if (options.closeModal) closeModal();
   render();
   requestAnimationFrame(() => {
     document
@@ -705,11 +856,15 @@ function saveWorkout() {
     return;
   }
   session.completedAt = new Date().toISOString();
+  if (session.bodyWeight) {
+    data.currentWeight = session.bodyWeight;
+    data.weightUpdatedAt = session.completedAt;
+  }
   data.workouts.push(JSON.parse(JSON.stringify(session)));
   data.draft = null;
   saveData();
   state.currentSession = null;
-  state.historyFilter = session.category;
+  state.historyFilter = workoutCategories(session).length > 1 ? "all" : workoutCategories(session)[0];
   state.route = "history";
   render();
   toast("Workout saved");
@@ -718,7 +873,8 @@ function saveWorkout() {
 function renderHistory() {
   const workouts = [...data.workouts]
     .filter(
-      (workout) => state.historyFilter === "all" || workout.category === state.historyFilter
+      (workout) =>
+        state.historyFilter === "all" || workoutCategories(workout).includes(state.historyFilter)
     )
     .sort(
       (a, b) => new Date(b.completedAt || b.startedAt) - new Date(a.completedAt || a.startedAt)
@@ -765,7 +921,10 @@ function renderHistory() {
 }
 
 function renderHistoryCard(workout) {
-  const meta = CATEGORY_META[workout.category];
+  const categories = workoutCategories(workout);
+  const meta = categories.length > 1
+    ? { label: "Mixed", color: "#ad7cff" }
+    : CATEGORY_META[categories[0]];
   const strengthSets = workout.exercises.reduce(
     (total, entry) => total + (entry.sets?.length || 0),
     0
@@ -778,6 +937,11 @@ function renderHistoryCard(workout) {
     .slice(0, 3)
     .map((entry) => `<span>${escapeHtml(entry.name)}</span>`)
     .join("");
+  const volumeSummary = [
+    strengthSets ? `${strengthSets} sets` : "",
+    intervals ? `${intervals} ${intervals === 1 ? "interval" : "intervals"}` : "",
+  ].filter(Boolean).join(" · ");
+  const categorySummary = categories.map((category) => CATEGORY_META[category].label).join(" + ");
 
   return `
     <button class="history-card" data-action="open-workout" data-workout-id="${escapeAttr(workout.id)}" style="--tone:${meta.color}">
@@ -786,7 +950,7 @@ function renderHistoryCard(workout) {
           <span class="history-dot"></span>
           <span>
             <strong>${meta.label}</strong>
-            <small>${workout.exercises.length} ${workout.exercises.length === 1 ? "exercise" : "exercises"} · ${workout.category === "cardio" ? `${intervals} intervals` : `${strengthSets} sets`}</small>
+            <small>${categorySummary} · ${workout.exercises.length} ${workout.exercises.length === 1 ? "exercise" : "exercises"} · ${volumeSummary}</small>
           </span>
         </span>
         <span class="history-date">${relativeDate(workout.completedAt || workout.startedAt)}<br>${formatTime(workout.startedAt)}</span>
@@ -805,7 +969,10 @@ function renderDetail() {
     state.route = "history";
     return renderHistory();
   }
-  const meta = CATEGORY_META[workout.category];
+  const categories = workoutCategories(workout);
+  const meta = categories.length > 1
+    ? { label: "Mixed", color: "#ad7cff" }
+    : CATEGORY_META[categories[0]];
   return `
     <header class="session-header">
       <button class="icon-button" data-action="close-detail" aria-label="Back">‹</button>
@@ -813,15 +980,29 @@ function renderDetail() {
         <strong>${meta.label} workout</strong>
         <span>${formatDate(workout.completedAt || workout.startedAt, { year: true })}</span>
       </div>
-      <button class="icon-button" data-action="delete-workout" data-workout-id="${escapeAttr(workout.id)}" aria-label="Delete workout">×</button>
+      <button class="icon-button" data-action="delete-workout" data-workout-id="${escapeAttr(workout.id)}" aria-label="Delete workout">⌫</button>
     </header>
 
     <section class="session-hero" style="--tone:${meta.color}; margin-bottom:17px;">
       <p>Completed · ${formatTime(workout.completedAt || workout.startedAt)}</p>
-      <h1>${meta.label} day</h1>
+      <h1>${meta.label} workout</h1>
+      <div class="hero-categories">${categories
+        .map((category) => `<span>${CATEGORY_META[category].label}</span>`)
+        .join("")}</div>
     </section>
 
     ${workout.exercises.map((entry) => renderDetailEntry(entry)).join("")}
+
+    ${
+      workout.bodyWeight
+        ? `
+          <section class="detail-block detail-metric">
+            <span>Body weight</span>
+            <strong>${escapeHtml(workout.bodyWeight)} ${data.unit}</strong>
+          </section>
+        `
+        : ""
+    }
 
     ${
       workout.notes
@@ -833,6 +1014,10 @@ function renderDetail() {
         `
         : ""
     }
+
+    <button class="danger-button detail-delete-button" data-action="delete-workout" data-workout-id="${escapeAttr(workout.id)}">
+      Delete this workout
+    </button>
   `;
 }
 
@@ -841,7 +1026,7 @@ function renderDetailEntry(entry) {
     return `
       <article class="detail-block">
         <h3>${escapeHtml(entry.name)}</h3>
-        <p class="subtext">${entry.intervals.length} ${entry.intervals.length === 1 ? "interval" : "intervals"}</p>
+        <p class="subtext"><span class="category-tag">Cardio</span> ${entry.intervals.length} ${entry.intervals.length === 1 ? "interval" : "intervals"}</p>
         ${entry.intervals
           .map(
             (interval, index) => `
@@ -861,7 +1046,7 @@ function renderDetailEntry(entry) {
   return `
     <article class="detail-block">
       <h3>${escapeHtml(entry.name)}</h3>
-      <p class="subtext">${escapeHtml(entry.muscle)} · ${entry.sets.length} ${entry.sets.length === 1 ? "set" : "sets"}</p>
+      <p class="subtext"><span class="category-tag">${CATEGORY_META[entry.category]?.label || "Strength"}</span> ${escapeHtml(entry.muscle)} · ${entry.sets.length} ${entry.sets.length === 1 ? "set" : "sets"}</p>
       ${entry.sets
         .map(
           (set, index) => `
@@ -893,7 +1078,7 @@ function renderLibrary() {
     </div>
     <p class="eyebrow">Make it yours</p>
     <h1>Exercise library</h1>
-    <p class="intro-copy">Built-in movements plus anything you add. Custom exercises stay available for every future workout.</p>
+    <p class="intro-copy">Keep only the movements you use. Removing a built-in exercise never changes your past workouts.</p>
 
     <div class="filter-tabs" aria-label="Filter exercises">
       ${Object.keys(CATEGORY_META)
@@ -910,26 +1095,38 @@ function renderLibrary() {
     ${meta.muscles
       .map((muscle) => {
         const exercises = allExercises(category, muscle);
+        const hiddenInGroup = allExercises(category, muscle, { includeHidden: true }).filter(
+          (exercise) => !exercise.custom && data.hiddenExercises.includes(exercise.id)
+        );
         return `
           <section class="library-group">
             <div class="library-group-head">
               <strong>${escapeHtml(muscle)}</strong>
               <span>${exercises.length} total</span>
             </div>
-            ${exercises
-              .map(
+            ${
+              exercises.length
+                ? exercises.map(
                 (exercise) => `
                   <div class="library-item">
                     <span>${escapeHtml(exercise.name)}</span>
-                    ${
-                      exercise.custom
-                        ? `<button class="text-button" data-action="delete-custom-exercise" data-exercise-id="${escapeAttr(exercise.id)}">Remove</button>`
-                        : `<span></span>`
-                    }
+                    <button class="text-button remove-library-button" data-action="remove-library-exercise" data-exercise-id="${escapeAttr(exercise.id)}">Remove</button>
                   </div>
                 `
-              )
-              .join("")}
+              ).join("")
+                : `<div class="library-item library-empty">No exercises in this group.</div>`
+            }
+            ${
+              hiddenInGroup.length
+                ? `
+                  <div class="library-item">
+                    <button class="text-button" data-action="restore-exercises" data-category="${category}" data-muscle="${escapeAttr(muscle)}">
+                      Restore ${hiddenInGroup.length} removed ${hiddenInGroup.length === 1 ? "exercise" : "exercises"}
+                    </button>
+                  </div>
+                `
+                : ""
+            }
             <div class="library-item">
               <button class="text-button" data-action="open-add-exercise" data-category="${category}" data-muscle="${escapeAttr(muscle)}">+ Add ${category === "cardio" ? "activity" : "exercise"}</button>
             </div>
@@ -948,6 +1145,95 @@ function renderLibrary() {
       <input id="import-file" type="file" accept="application/json" hidden />
     </div>
   `;
+}
+
+function openAddEntryModal() {
+  const category = state.selectedCategory || state.currentSession?.category || "push";
+  const muscle = CATEGORY_META[category].muscles.includes(state.selectedMuscle)
+    ? state.selectedMuscle
+    : CATEGORY_META[category].muscles[0];
+  const exercises = allExercises(category, muscle);
+  document.querySelector("#modal-root").innerHTML = `
+    <div class="modal-backdrop" data-action="close-modal">
+      <section class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="add-entry-title">
+        <div class="modal-handle"></div>
+        <h2 id="add-entry-title">Add another exercise</h2>
+        <p>Mix any categories you want in this workout.</p>
+        <div class="form-group">
+          <label for="entry-modal-category">Category</label>
+          <div class="select-wrap">
+            <select id="entry-modal-category">
+              ${Object.keys(CATEGORY_META)
+                .map(
+                  (item) =>
+                    `<option value="${item}" ${item === category ? "selected" : ""}>${CATEGORY_META[item].label}</option>`
+                )
+                .join("")}
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="entry-modal-muscle">Muscle group</label>
+          <div class="select-wrap">
+            <select id="entry-modal-muscle">
+              ${CATEGORY_META[category].muscles
+                .map(
+                  (item) =>
+                    `<option value="${escapeAttr(item)}" ${item === muscle ? "selected" : ""}>${escapeHtml(item)}</option>`
+                )
+                .join("")}
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="entry-modal-exercise">${category === "cardio" ? "Activity" : "Exercise"}</label>
+          <div class="select-wrap">
+            <select id="entry-modal-exercise">
+              <option value="">Choose one…</option>
+              ${exercises
+                .map(
+                  (exercise) =>
+                    `<option value="${escapeAttr(exercise.id)}">${escapeHtml(exercise.name)}${exercise.custom ? " · custom" : ""}</option>`
+                )
+                .join("")}
+            </select>
+          </div>
+        </div>
+        <button class="text-button" data-action="open-custom-from-entry-modal">+ Create your own exercise</button>
+        <div class="modal-actions">
+          <button class="secondary-button" data-action="close-modal">Cancel</button>
+          <button class="primary-button" data-action="add-entry-from-modal">Add to workout</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function refreshAddEntryModal(categoryChanged = false) {
+  const categorySelect = document.querySelector("#entry-modal-category");
+  const muscleSelect = document.querySelector("#entry-modal-muscle");
+  const exerciseSelect = document.querySelector("#entry-modal-exercise");
+  if (!categorySelect || !muscleSelect || !exerciseSelect) return;
+  const category = categorySelect.value;
+  if (categoryChanged) {
+    muscleSelect.innerHTML = CATEGORY_META[category].muscles
+      .map((muscle) => `<option value="${escapeAttr(muscle)}">${escapeHtml(muscle)}</option>`)
+      .join("");
+  }
+  const muscle = muscleSelect.value;
+  exerciseSelect.innerHTML = `
+    <option value="">Choose one…</option>
+    ${allExercises(category, muscle)
+      .map(
+        (exercise) =>
+          `<option value="${escapeAttr(exercise.id)}">${escapeHtml(exercise.name)}${exercise.custom ? " · custom" : ""}</option>`
+      )
+      .join("")}
+  `;
+  const label = document.querySelector('label[for="entry-modal-muscle"]');
+  const exerciseLabel = document.querySelector('label[for="entry-modal-exercise"]');
+  if (label) label.textContent = category === "cardio" ? "Type" : "Muscle group";
+  if (exerciseLabel) exerciseLabel.textContent = category === "cardio" ? "Activity" : "Exercise";
 }
 
 function openAddExerciseModal(category, muscle) {
@@ -1014,6 +1300,26 @@ function openSettingsModal() {
             <button class="${data.unit === "kg" ? "primary-button" : "secondary-button"}" data-action="set-unit" data-unit="kg">Kilograms (kg)</button>
           </div>
         </div>
+        <div class="form-group">
+          <label for="current-weight-input">Current body weight</label>
+          <div class="input-with-unit">
+            <input
+              id="current-weight-input"
+              class="number-input"
+              type="number"
+              min="0"
+              step="0.1"
+              inputmode="decimal"
+              value="${escapeAttr(data.currentWeight || "")}"
+              placeholder="Add weight"
+            />
+            <span>${data.unit}</span>
+          </div>
+          <div class="button-row settings-weight-actions">
+            <button class="secondary-button" data-action="save-current-weight">Save weight</button>
+            <button class="secondary-button" data-action="clear-current-weight">Clear</button>
+          </div>
+        </div>
         <div class="modal-actions">
           <button class="secondary-button" data-action="close-modal">Done</button>
         </div>
@@ -1032,7 +1338,7 @@ function addCustomExercise(form) {
   const category = String(formData.get("category") || "");
   const muscle = String(formData.get("muscle") || "");
   if (!name || !CATEGORY_META[category]?.muscles.includes(muscle)) return;
-  const duplicate = allExercises(category, muscle).some(
+  const duplicate = allExercises(category, muscle, { includeHidden: true }).some(
     (exercise) => exercise.name.toLowerCase() === name.toLowerCase()
   );
   if (duplicate) {
@@ -1048,7 +1354,8 @@ function addCustomExercise(form) {
   };
   data.customExercises.push(exercise);
   saveData();
-  if (state.route === "session" && state.currentSession.category === category) {
+  if (state.route === "session") {
+    state.selectedCategory = category;
     state.selectedMuscle = muscle;
   }
   closeModal();
@@ -1080,6 +1387,9 @@ async function importData(file) {
     data = {
       ...defaultData(),
       ...parsed,
+      version: 2,
+      workouts: parsed.workouts.map(normalizeWorkout),
+      hiddenExercises: Array.isArray(parsed.hiddenExercises) ? parsed.hiddenExercises : [],
       draft: null,
     };
     saveData();
@@ -1131,7 +1441,31 @@ document.addEventListener("click", async (event) => {
     state.selectedMuscle = target.dataset.muscle;
     render();
   }
+  if (action === "select-session-category") {
+    state.selectedCategory = target.dataset.category;
+    state.selectedMuscle = CATEGORY_META[state.selectedCategory].muscles[0];
+    render();
+  }
   if (action === "add-entry") addEntry();
+  if (action === "open-add-entry-modal") openAddEntryModal();
+  if (action === "add-entry-from-modal") {
+    const category = document.querySelector("#entry-modal-category")?.value;
+    const muscle = document.querySelector("#entry-modal-muscle")?.value;
+    const exerciseId = document.querySelector("#entry-modal-exercise")?.value;
+    if (!exerciseId) {
+      toast("Choose an exercise first");
+    } else {
+      state.selectedCategory = category;
+      state.selectedMuscle = muscle;
+      addEntryById(category, muscle, exerciseId, { closeModal: true });
+    }
+  }
+  if (action === "open-custom-from-entry-modal") {
+    const category = document.querySelector("#entry-modal-category")?.value || "push";
+    const muscle =
+      document.querySelector("#entry-modal-muscle")?.value || CATEGORY_META[category].muscles[0];
+    openAddExerciseModal(category, muscle);
+  }
   if (action === "remove-entry") {
     state.currentSession.exercises = state.currentSession.exercises.filter(
       (entry) => entry.entryId !== target.dataset.entryId
@@ -1151,12 +1485,24 @@ document.addEventListener("click", async (event) => {
     persistDraft();
     render();
   }
+  if (action === "toggle-same-reps") {
+    const entry = getEntry(target.dataset.entryId);
+    if (!entry) return;
+    entry.sameReps = !entry.sameReps;
+    if (entry.sameReps && entry.sets.length) {
+      entry.sets.forEach((set, index) => {
+        if (index > 0) set.reps = entry.sets[0].reps;
+      });
+    }
+    persistDraft();
+    render();
+  }
   if (action === "add-set") {
     const entry = getEntry(target.dataset.entryId);
     if (!entry) return;
     entry.sets.push({
       weight: entry.sameWeight && entry.sets.length ? entry.sets[0].weight : "",
-      reps: "",
+      reps: entry.sameReps && entry.sets.length ? entry.sets[0].reps : "",
     });
     persistDraft();
     render();
@@ -1219,13 +1565,28 @@ document.addEventListener("click", async (event) => {
   if (action === "open-add-exercise") {
     openAddExerciseModal(target.dataset.category, target.dataset.muscle);
   }
-  if (action === "delete-custom-exercise") {
-    const exercise = data.customExercises.find((item) => item.id === target.dataset.exerciseId);
+  if (action === "remove-library-exercise") {
+    const exercise = getExerciseById(target.dataset.exerciseId);
     if (!exercise || !window.confirm(`Remove ${exercise.name} from your library? Past workouts will be kept.`)) return;
-    data.customExercises = data.customExercises.filter((item) => item.id !== exercise.id);
+    if (exercise.custom) {
+      data.customExercises = data.customExercises.filter((item) => item.id !== exercise.id);
+    } else if (!data.hiddenExercises.includes(exercise.id)) {
+      data.hiddenExercises.push(exercise.id);
+    }
     saveData();
     render();
     toast(`${exercise.name} removed`);
+  }
+  if (action === "restore-exercises") {
+    const defaultIds = allExercises(target.dataset.category, target.dataset.muscle, {
+      includeHidden: true,
+    })
+      .filter((exercise) => !exercise.custom)
+      .map((exercise) => exercise.id);
+    data.hiddenExercises = data.hiddenExercises.filter((id) => !defaultIds.includes(id));
+    saveData();
+    render();
+    toast("Removed exercises restored");
   }
   if (action === "close-modal") {
     if (target.classList.contains("modal-backdrop") && event.target !== target) return;
@@ -1237,6 +1598,27 @@ document.addEventListener("click", async (event) => {
     saveData();
     openSettingsModal();
     toast(`Using ${data.unit}`);
+  }
+  if (action === "save-current-weight") {
+    const value = document.querySelector("#current-weight-input")?.value.trim() || "";
+    if (value && Number(value) <= 0) {
+      toast("Enter a valid body weight");
+      return;
+    }
+    data.currentWeight = value;
+    data.weightUpdatedAt = value ? new Date().toISOString() : null;
+    saveData();
+    closeModal();
+    render();
+    toast(value ? "Current weight saved" : "Current weight cleared");
+  }
+  if (action === "clear-current-weight") {
+    data.currentWeight = "";
+    data.weightUpdatedAt = null;
+    saveData();
+    closeModal();
+    render();
+    toast("Current weight cleared");
   }
   if (action === "export-data") exportData();
   if (action === "import-data") document.querySelector("#import-file")?.click();
@@ -1269,6 +1651,18 @@ document.addEventListener("input", (event) => {
           if (index > 0) input.value = target.value;
         });
     }
+    if (field === "reps" && setIndex === 0 && entry.sameReps) {
+      entry.sets.forEach((set, index) => {
+        if (index > 0) set.reps = target.value;
+      });
+      document
+        .querySelectorAll(
+          `[data-action="update-strength-set"][data-entry-id="${CSS.escape(entry.entryId)}"][data-field="reps"]`
+        )
+        .forEach((input, index) => {
+          if (index > 0) input.value = target.value;
+        });
+    }
     persistDraft();
   }
   if (action === "update-interval") {
@@ -1279,6 +1673,10 @@ document.addEventListener("input", (event) => {
   }
   if (action === "update-session-notes") {
     state.currentSession.notes = target.value;
+    persistDraft();
+  }
+  if (action === "update-session-weight") {
+    state.currentSession.bodyWeight = target.value;
     persistDraft();
   }
 });
@@ -1295,6 +1693,8 @@ document.addEventListener("change", (event) => {
         category === "cardio" ? "Type" : "Muscle group";
     }
   }
+  if (event.target.id === "entry-modal-category") refreshAddEntryModal(true);
+  if (event.target.id === "entry-modal-muscle") refreshAddEntryModal(false);
   if (event.target.id === "import-file") importData(event.target.files?.[0]);
 });
 

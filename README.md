@@ -1,6 +1,8 @@
 # Setline
 
-Setline is a mobile-first, installable workout log for push, pull, legs, and cardio sessions.
+Setline is a mobile-first, installable workout log for push, pull, legs, core, and cardio.
+
+One workout can mix exercises from any category. It also supports per-set weight and reps, copy-down controls for both, cardio intervals and notes, current body weight, removable library exercises, previous-performance recall, and complete workout history.
 
 ## Use it on a phone
 
