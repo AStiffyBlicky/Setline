@@ -1,7 +1,7 @@
 {
   "name": "Setline Workout Log",
   "short_name": "Setline",
-  "description": "Track mixed push, pull, legs, core, and cardio workouts offline.",
+  "description": "Track mixed workouts offline and analyze working-weight progress over time.",
   "id": "./",
   "start_url": "./",
   "scope": "./",
