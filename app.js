@@ -67,9 +67,15 @@ const state = {
   selectedCategory: null,
   selectedMuscle: null,
   historyFilter: "all",
+  historyYear: "all",
+  historyMonth: "all",
+  historyStart: "",
+  historyEnd: "",
   detailId: null,
   libraryCategory: "push",
   analyticsExerciseId: null,
+  analyticsMode: "exercise",
+  analyticsRange: "all",
   deferredInstallPrompt: null,
 };
 
@@ -77,7 +83,7 @@ let data = loadData();
 
 function defaultData() {
   return {
-    version: 2,
+    version: 3,
     workouts: [],
     customExercises: [],
     hiddenExercises: [],
@@ -85,6 +91,8 @@ function defaultData() {
     unit: "lb",
     currentWeight: "",
     weightUpdatedAt: null,
+    bodyWeightHistory: [],
+    theme: "light",
   };
 }
 
@@ -102,6 +110,7 @@ function normalizeWorkout(workout) {
   return {
     ...workout,
     category: fallbackCategory,
+    bodyWeightUnit: workout.bodyWeightUnit || null,
     exercises: Array.isArray(workout.exercises)
       ? workout.exercises.map((entry) => normalizeEntry(entry, fallbackCategory))
       : [],
@@ -116,10 +125,11 @@ function loadData() {
     return {
       ...defaultData(),
       ...saved,
-      version: 2,
+      version: 3,
       workouts: Array.isArray(saved.workouts) ? saved.workouts.map(normalizeWorkout) : [],
       customExercises: Array.isArray(saved.customExercises) ? saved.customExercises : [],
       hiddenExercises: Array.isArray(saved.hiddenExercises) ? saved.hiddenExercises : [],
+      bodyWeightHistory: Array.isArray(saved.bodyWeightHistory) ? saved.bodyWeightHistory : [],
       draft: saved.draft ? normalizeWorkout(saved.draft) : null,
     };
   } catch {
@@ -318,6 +328,111 @@ function exerciseWeightSeries(exerciseId) {
   return exerciseHistory(exerciseId).filter((point) => point.weight !== null);
 }
 
+function convertWeight(value, fromUnit, toUnit) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return null;
+  if (!fromUnit || fromUnit === toUnit) return numericValue;
+  return fromUnit === "kg" ? numericValue * 2.2046226218 : numericValue / 2.2046226218;
+}
+
+function bodyWeightSeries() {
+  const workoutPoints = data.workouts.flatMap((workout) => {
+    if (!workout.bodyWeight || Number(workout.bodyWeight) <= 0) return [];
+    return [
+      {
+        date: new Date(workout.completedAt || workout.startedAt),
+        weight: convertWeight(
+          workout.bodyWeight,
+          workout.bodyWeightUnit || data.unit,
+          data.unit
+        ),
+        source: "Workout",
+        id: `workout-${workout.id}`,
+      },
+    ];
+  });
+  const settingsPoints = data.bodyWeightHistory.flatMap((entry) => {
+    if (!entry.weight || Number(entry.weight) <= 0 || !entry.date) return [];
+    return [
+      {
+        date: new Date(entry.date),
+        weight: convertWeight(entry.weight, entry.unit || data.unit, data.unit),
+        source: "Settings",
+        id: entry.id,
+      },
+    ];
+  });
+  const points = [...workoutPoints, ...settingsPoints];
+  if (
+    data.currentWeight &&
+    data.weightUpdatedAt &&
+    !points.some(
+      (point) => Math.abs(point.date - new Date(data.weightUpdatedAt)) < 1000
+    )
+  ) {
+    points.push({
+      date: new Date(data.weightUpdatedAt),
+      weight: Number(data.currentWeight),
+      source: "Current weight",
+      id: "legacy-current-weight",
+    });
+  }
+  return points.sort((a, b) => a.date - b.date);
+}
+
+function filterAnalyticsRange(points) {
+  if (state.analyticsRange === "all") return points;
+  if (state.analyticsRange.startsWith("year-")) {
+    const year = Number(state.analyticsRange.slice(5));
+    return points.filter((point) => point.date.getFullYear() === year);
+  }
+  const cutoff = new Date();
+  if (state.analyticsRange === "last12") cutoff.setMonth(cutoff.getMonth() - 12);
+  if (state.analyticsRange === "last1") cutoff.setMonth(cutoff.getMonth() - 1);
+  return points.filter((point) => point.date >= cutoff);
+}
+
+function renderAnalyticsRangeSelector(points) {
+  const years = [...new Set(points.map((point) => point.date.getFullYear()))].sort(
+    (a, b) => b - a
+  );
+  if (
+    state.analyticsRange.startsWith("year-") &&
+    !years.includes(Number(state.analyticsRange.slice(5)))
+  ) {
+    years.push(Number(state.analyticsRange.slice(5)));
+    years.sort((a, b) => b - a);
+  }
+  return `
+    <section class="analytics-range-control">
+      <label for="analytics-range-select">Graph range</label>
+      <div class="select-wrap">
+        <select id="analytics-range-select">
+          <option value="all" ${state.analyticsRange === "all" ? "selected" : ""}>All time</option>
+          <option value="last12" ${
+            state.analyticsRange === "last12" ? "selected" : ""
+          }>Last 12 months</option>
+          <option value="last1" ${
+            state.analyticsRange === "last1" ? "selected" : ""
+          }>Last month</option>
+          ${
+            years.length
+              ? `<optgroup label="By year">${years
+                  .map(
+                    (year) =>
+                      `<option value="year-${year}" ${
+                        state.analyticsRange === `year-${year}` ? "selected" : ""
+                      }>${year}</option>`
+                  )
+                  .join("")}</optgroup>`
+              : ""
+          }
+        </select>
+      </div>
+    </section>
+  `;
+}
+
 function compoundedMonthlyGrowth(points) {
   if (points.length < 2) return null;
   const first = points[0];
@@ -343,6 +458,15 @@ function formatChartDate(date) {
 function render() {
   const view = document.querySelector("#app-view");
   const nav = document.querySelector("#bottom-nav");
+  const isDark = data.theme === "dark";
+  document.documentElement.classList.toggle("dark-theme", isDark);
+  document.documentElement.classList.toggle("light-theme", !isDark);
+  document.body.classList.toggle("dark-theme", isDark);
+  document.body.classList.toggle("light-theme", !isDark);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute(
+    "content",
+    isDark ? "#0e0a13" : "#f7f3fb"
+  );
   document.body.classList.toggle("session-open", state.route === "session");
   nav.classList.toggle("is-hidden", state.route === "session");
 
@@ -383,8 +507,6 @@ function renderHome() {
     </div>
 
     <p class="eyebrow">${new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric" }).format(new Date())}</p>
-    <h1>What are we training?</h1>
-    <p class="intro-copy">Choose a session, put in the work, and keep every set ready for next time.</p>
 
     ${
       draft
@@ -465,6 +587,7 @@ function createSession(category) {
     completedAt: null,
     notes: "",
     bodyWeight: data.currentWeight || "",
+    bodyWeightUnit: data.unit,
     exercises: [],
   };
 }
@@ -602,7 +725,7 @@ function renderSession() {
               .join("")
           : `
             <div class="empty-state">
-              <span class="empty-state-icon">+</span>
+              <button class="empty-state-icon" data-action="open-add-entry-modal" aria-label="Add your first exercise">+</button>
               <h3>Add your first exercise</h3>
               <p>Start anywhere. You can mix categories freely in the same workout.</p>
             </div>
@@ -945,6 +1068,7 @@ function saveWorkout() {
   }
   session.completedAt = new Date().toISOString();
   if (session.bodyWeight) {
+    session.bodyWeightUnit = data.unit;
     data.currentWeight = session.bodyWeight;
     data.weightUpdatedAt = session.completedAt;
   }
@@ -958,11 +1082,54 @@ function saveWorkout() {
   toast("Workout saved");
 }
 
+function historyDateMatches(workout) {
+  const workoutDate = new Date(workout.completedAt || workout.startedAt);
+  if (
+    state.historyYear !== "all" &&
+    workoutDate.getFullYear() !== Number(state.historyYear)
+  ) {
+    return false;
+  }
+  if (
+    state.historyMonth !== "all" &&
+    workoutDate.getMonth() !== Number(state.historyMonth)
+  ) {
+    return false;
+  }
+  if (state.historyStart) {
+    const start = new Date(`${state.historyStart}T00:00:00`);
+    if (workoutDate < start) return false;
+  }
+  if (state.historyEnd) {
+    const end = new Date(`${state.historyEnd}T23:59:59.999`);
+    if (workoutDate > end) return false;
+  }
+  return true;
+}
+
 function renderHistory() {
+  const years = [
+    ...new Set(
+      data.workouts.map((workout) =>
+        new Date(workout.completedAt || workout.startedAt).getFullYear()
+      )
+    ),
+  ].sort((a, b) => b - a);
+  if (state.historyYear !== "all" && !years.includes(Number(state.historyYear))) {
+    years.push(Number(state.historyYear));
+    years.sort((a, b) => b - a);
+  }
+  const hasDateFilter =
+    state.historyYear !== "all" ||
+    state.historyMonth !== "all" ||
+    state.historyStart ||
+    state.historyEnd;
   const workouts = [...data.workouts]
     .filter(
       (workout) =>
-        state.historyFilter === "all" || workoutCategories(workout).includes(state.historyFilter)
+        (state.historyFilter === "all" ||
+          workoutCategories(workout).includes(state.historyFilter)) &&
+        historyDateMatches(workout)
     )
     .sort(
       (a, b) => new Date(b.completedAt || b.startedAt) - new Date(a.completedAt || a.startedAt)
@@ -975,7 +1142,6 @@ function renderHistory() {
     </div>
     <p class="eyebrow">Your training record</p>
     <h1>History</h1>
-    <p class="intro-copy">Every workout, every set, ready when you want to look back.</p>
 
     <div class="filter-tabs" aria-label="Filter history">
       ${["all", ...Object.keys(CATEGORY_META)]
@@ -988,6 +1154,65 @@ function renderHistory() {
         )
         .join("")}
     </div>
+
+    <section class="history-date-filters">
+      <div class="history-filter-row">
+        <label>
+          Year
+          <div class="select-wrap">
+            <select id="history-year-filter">
+              <option value="all">Any year</option>
+              ${years
+                .map(
+                  (year) =>
+                    `<option value="${year}" ${
+                      String(year) === state.historyYear ? "selected" : ""
+                    }>${year}</option>`
+                )
+                .join("")}
+            </select>
+          </div>
+        </label>
+        <label>
+          Month
+          <div class="select-wrap">
+            <select id="history-month-filter">
+              <option value="all">Any month</option>
+              ${Array.from({ length: 12 }, (_, month) => {
+                const monthName = new Intl.DateTimeFormat("en-US", {
+                  month: "long",
+                }).format(new Date(2026, month, 1));
+                return `<option value="${month}" ${
+                  String(month) === state.historyMonth ? "selected" : ""
+                }>${monthName}</option>`;
+              }).join("")}
+            </select>
+          </div>
+        </label>
+      </div>
+      <div class="history-filter-row custom-date-row">
+        <label>
+          From
+          <input id="history-start-filter" class="text-input" type="date" value="${escapeAttr(
+            state.historyStart
+          )}" />
+        </label>
+        <label>
+          Through
+          <input id="history-end-filter" class="text-input" type="date" value="${escapeAttr(
+            state.historyEnd
+          )}" />
+        </label>
+      </div>
+      <div class="history-filter-footer">
+        <span>${workouts.length} matching ${workouts.length === 1 ? "workout" : "workouts"}</span>
+        ${
+          hasDateFilter
+            ? `<button class="text-button" data-action="clear-history-dates">Clear date filters</button>`
+            : ""
+        }
+      </div>
+    </section>
 
     ${
       workouts.length
@@ -1086,7 +1311,13 @@ function renderDetail() {
         ? `
           <section class="detail-block detail-metric">
             <span>Body weight</span>
-            <strong>${escapeHtml(workout.bodyWeight)} ${data.unit}</strong>
+            <strong>${formatWeight(
+              convertWeight(
+                workout.bodyWeight,
+                workout.bodyWeightUnit || data.unit,
+                data.unit
+              )
+            )} ${data.unit}</strong>
           </section>
         `
         : ""
@@ -1164,7 +1395,6 @@ function renderLibrary() {
       ${brandMarkup()}
       <button class="icon-button" data-action="open-add-exercise" data-category="${category}" data-muscle="${escapeAttr(meta.muscles[0])}" aria-label="Add exercise">+</button>
     </div>
-    <p class="eyebrow">Make it yours</p>
     <h1>Exercise library</h1>
     <p class="intro-copy">Keep only the movements you use. Removing a built-in exercise never changes your past workouts.</p>
 
@@ -1235,13 +1465,17 @@ function renderLibrary() {
   `;
 }
 
-function renderWeightChart(points) {
+function renderWeightChart(points, options = {}) {
+  const emptyTitle = options.emptyTitle || "No weighted sets yet";
+  const emptyCopy =
+    options.emptyCopy || "Log a weight for this exercise and its graph will begin here.";
+  const ariaLabel = options.ariaLabel || "Working weight";
   if (!points.length) {
     return `
       <div class="analytics-empty-chart">
         <span>⌁</span>
-        <strong>No weighted sets yet</strong>
-        <p>Log a weight for this exercise and its graph will begin here.</p>
+        <strong>${escapeHtml(emptyTitle)}</strong>
+        <p>${escapeHtml(emptyCopy)}</p>
       </div>
     `;
   }
@@ -1268,13 +1502,13 @@ function renderWeightChart(points) {
   },${padding.top + plotHeight}`;
 
   return `
-    <div class="chart-scroll" aria-label="Working weight by date">
+    <div class="chart-scroll" aria-label="${escapeAttr(ariaLabel)} by date">
       <svg
         class="weight-chart"
         viewBox="0 0 ${width} ${height}"
         style="width:${width}px"
         role="img"
-        aria-label="Working weight history from ${formatChartDate(points[0].date)} to ${formatChartDate(points.at(-1).date)}"
+        aria-label="${escapeAttr(ariaLabel)} history from ${formatChartDate(points[0].date)} to ${formatChartDate(points.at(-1).date)}"
       >
         <defs>
           <linearGradient id="weight-area-gradient" x1="0" y1="0" x2="0" y2="1">
@@ -1328,7 +1562,21 @@ function renderWeightChart(points) {
   `;
 }
 
+function renderAnalyticsModeSwitch() {
+  return `
+    <div class="analytics-mode-switch" aria-label="Data type">
+      <button class="${state.analyticsMode === "exercise" ? "is-active" : ""}" data-action="set-analytics-mode" data-mode="exercise">
+        Exercise
+      </button>
+      <button class="${state.analyticsMode === "body" ? "is-active" : ""}" data-action="set-analytics-mode" data-mode="body">
+        Body weight
+      </button>
+    </div>
+  `;
+}
+
 function renderData() {
+  if (state.analyticsMode === "body") return renderBodyWeightData();
   const exercises = availableAnalyticsExercises();
   if (
     !state.analyticsExerciseId ||
@@ -1344,7 +1592,8 @@ function renderData() {
     (exercise) => exercise.id === state.analyticsExerciseId
   );
   const fullHistory = selectedExercise ? exerciseHistory(selectedExercise.id) : [];
-  const points = fullHistory.filter((item) => item.weight !== null);
+  const allPoints = fullHistory.filter((item) => item.weight !== null);
+  const points = filterAnalyticsRange(allPoints);
   const latest = points.at(-1);
   const growth = compoundedMonthlyGrowth(points);
 
@@ -1353,9 +1602,9 @@ function renderData() {
       ${brandMarkup()}
       <span class="meta-line">${points.length} weighted ${points.length === 1 ? "session" : "sessions"}</span>
     </div>
-    <p class="eyebrow">Progress, without the noise</p>
+    ${renderAnalyticsModeSwitch()}
     <h1>Exercise data</h1>
-    <p class="intro-copy">Choose an exercise to see its complete working-weight history. Repetitions never affect the graph.</p>
+    <p class="intro-copy">Choose an exercise to see its complete working-weight history. Repetitions don't affect the graph.</p>
 
     ${
       exercises.length
@@ -1391,6 +1640,8 @@ function renderData() {
               </select>
             </div>
           </section>
+
+          ${renderAnalyticsRangeSelector(allPoints.length ? allPoints : fullHistory)}
 
           <section class="analytics-summary">
             <div class="analytics-title-row">
@@ -1488,6 +1739,112 @@ function renderData() {
             <h3>Your exercise library is empty</h3>
             <p>Add a strength exercise in Library before opening its analytics.</p>
             <button class="primary-button" data-route="library">Open library</button>
+          </div>
+        `
+    }
+  `;
+}
+
+function renderBodyWeightData() {
+  const allPoints = bodyWeightSeries();
+  const points = filterAnalyticsRange(allPoints);
+  const latest = points.at(-1);
+  const growth = compoundedMonthlyGrowth(points);
+
+  return `
+    <div class="topbar">
+      ${brandMarkup()}
+      <span class="meta-line">${points.length} ${points.length === 1 ? "entry" : "entries"}</span>
+    </div>
+    ${renderAnalyticsModeSwitch()}
+    <h1>Body weight data</h1>
+    <p class="intro-copy">See how your body weight changes over time using entries from Settings and completed workouts.</p>
+
+    ${renderAnalyticsRangeSelector(allPoints)}
+
+    <section class="analytics-summary body-weight-summary">
+      <div class="analytics-title-row">
+        <span>
+          <span class="category-tag">Body weight</span>
+          <h2>Your trend</h2>
+        </span>
+        <button class="text-button" data-action="open-settings">+ Add weight</button>
+      </div>
+      <div class="analytics-metrics">
+        <article class="metric-card">
+          <span>Most recent weight</span>
+          <strong>${
+            latest ? `${formatWeight(latest.weight)} <small>${data.unit}</small>` : "—"
+          }</strong>
+          <small>${
+            latest ? formatDate(latest.date, { year: true }) : "No body-weight entries"
+          }</small>
+        </article>
+        <article class="metric-card growth-card">
+          <span>Average monthly change</span>
+          <strong class="${growth !== null && growth < 0 ? "is-negative" : ""}">${
+            growth === null
+              ? "—"
+              : `${growth >= 0 ? "+" : ""}${growth.toFixed(2)}%`
+          }</strong>
+          <small>${
+            growth === null
+              ? "Needs two weights spanning at least 28 days"
+              : "Compounded across the selected graph range"
+          }</small>
+        </article>
+      </div>
+    </section>
+
+    <section class="analytics-chart-card">
+      <div class="section-heading analytics-section-heading">
+        <span>
+          <p class="eyebrow">Body weight</p>
+          <h2>Weight over time</h2>
+        </span>
+        <p>${data.unit}</p>
+      </div>
+      ${renderWeightChart(points, {
+        emptyTitle: "No body-weight data in this range",
+        emptyCopy: "Add your current weight in Settings or with a workout to begin the graph.",
+        ariaLabel: "Body weight",
+      })}
+      <p class="chart-footnote">The graph uses body weights saved in Settings and body weights recorded with completed workouts.</p>
+    </section>
+
+    <div class="section-heading">
+      <h2>Body weight history</h2>
+      <p>${allPoints.length} ${allPoints.length === 1 ? "entry" : "entries"}</p>
+    </div>
+    ${
+      allPoints.length
+        ? `
+          <div class="analytics-history-list">
+            ${[...allPoints]
+              .reverse()
+              .map(
+                (point) => `
+                  <article class="analytics-history-row body-weight-history-row">
+                    <span class="analytics-history-date">
+                      <strong>${formatDate(point.date, { year: true })}</strong>
+                      <small>${formatTime(point.date)}</small>
+                    </span>
+                    <span class="body-weight-source">${escapeHtml(point.source)}</span>
+                    <strong class="analytics-working-weight">${formatWeight(
+                      point.weight
+                    )} ${data.unit}</strong>
+                  </article>
+                `
+              )
+              .join("")}
+          </div>
+        `
+        : `
+          <div class="empty-state">
+            <span class="empty-state-icon">BW</span>
+            <h3>No body-weight history yet</h3>
+            <p>Add your current weight in Settings. Each saved value becomes a dated point.</p>
+            <button class="primary-button" data-action="open-settings">Add current weight</button>
           </div>
         `
     }
@@ -1641,6 +1998,17 @@ function openSettingsModal() {
         <h2 id="settings-title">Settings</h2>
         <p>A couple of practical choices. Nothing that needs a user manual.</p>
         <div class="form-group">
+          <label>Appearance</label>
+          <div class="button-row">
+            <button class="${
+              data.theme !== "dark" ? "primary-button" : "secondary-button"
+            }" data-action="set-theme" data-theme="light">Light</button>
+            <button class="${
+              data.theme === "dark" ? "primary-button" : "secondary-button"
+            }" data-action="set-theme" data-theme="dark">Dark</button>
+          </div>
+        </div>
+        <div class="form-group">
           <label>Weight unit</label>
           <div class="button-row">
             <button class="${data.unit === "lb" ? "primary-button" : "secondary-button"}" data-action="set-unit" data-unit="lb">Pounds (lb)</button>
@@ -1734,9 +2102,12 @@ async function importData(file) {
     data = {
       ...defaultData(),
       ...parsed,
-      version: 2,
+      version: 3,
       workouts: parsed.workouts.map(normalizeWorkout),
       hiddenExercises: Array.isArray(parsed.hiddenExercises) ? parsed.hiddenExercises : [],
+      bodyWeightHistory: Array.isArray(parsed.bodyWeightHistory)
+        ? parsed.bodyWeightHistory
+        : [],
       draft: null,
     };
     saveData();
@@ -1885,6 +2256,13 @@ document.addEventListener("click", async (event) => {
     state.historyFilter = target.dataset.category;
     render();
   }
+  if (action === "clear-history-dates") {
+    state.historyYear = "all";
+    state.historyMonth = "all";
+    state.historyStart = "";
+    state.historyEnd = "";
+    render();
+  }
   if (action === "open-workout") {
     state.detailId = target.dataset.workoutId;
     state.route = "detail";
@@ -1940,7 +2318,18 @@ document.addEventListener("click", async (event) => {
     closeModal();
   }
   if (action === "open-settings") openSettingsModal();
+  if (action === "set-theme") {
+    data.theme = target.dataset.theme === "dark" ? "dark" : "light";
+    saveData();
+    render();
+    openSettingsModal();
+  }
   if (action === "set-unit") {
+    if (data.currentWeight && data.unit !== target.dataset.unit) {
+      data.currentWeight = formatWeight(
+        convertWeight(data.currentWeight, data.unit, target.dataset.unit)
+      );
+    }
     data.unit = target.dataset.unit;
     saveData();
     openSettingsModal();
@@ -1952,8 +2341,17 @@ document.addEventListener("click", async (event) => {
       toast("Enter a valid body weight");
       return;
     }
+    const savedAt = value ? new Date().toISOString() : null;
     data.currentWeight = value;
-    data.weightUpdatedAt = value ? new Date().toISOString() : null;
+    data.weightUpdatedAt = savedAt;
+    if (value) {
+      data.bodyWeightHistory.push({
+        id: uid("body-weight"),
+        date: savedAt,
+        weight: value,
+        unit: data.unit,
+      });
+    }
     saveData();
     closeModal();
     render();
@@ -1966,6 +2364,11 @@ document.addEventListener("click", async (event) => {
     closeModal();
     render();
     toast("Current weight cleared");
+  }
+  if (action === "set-analytics-mode") {
+    state.analyticsMode = target.dataset.mode === "body" ? "body" : "exercise";
+    render();
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
   if (action === "export-data") exportData();
   if (action === "import-data") document.querySelector("#import-file")?.click();
@@ -2024,6 +2427,7 @@ document.addEventListener("input", (event) => {
   }
   if (action === "update-session-weight") {
     state.currentSession.bodyWeight = target.value;
+    state.currentSession.bodyWeightUnit = data.unit;
     persistDraft();
   }
 });
@@ -2031,6 +2435,26 @@ document.addEventListener("input", (event) => {
 document.addEventListener("change", (event) => {
   if (event.target.id === "data-exercise-select") {
     state.analyticsExerciseId = event.target.value;
+    render();
+  }
+  if (event.target.id === "analytics-range-select") {
+    state.analyticsRange = event.target.value;
+    render();
+  }
+  if (event.target.id === "history-year-filter") {
+    state.historyYear = event.target.value;
+    render();
+  }
+  if (event.target.id === "history-month-filter") {
+    state.historyMonth = event.target.value;
+    render();
+  }
+  if (event.target.id === "history-start-filter") {
+    state.historyStart = event.target.value;
+    render();
+  }
+  if (event.target.id === "history-end-filter") {
+    state.historyEnd = event.target.value;
     render();
   }
   if (event.target.id === "new-exercise-category") {

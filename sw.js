@@ -1,4 +1,4 @@
-const CACHE_NAME = "setline-v5";
+const CACHE_NAME = "setline-v6";
 const APP_ASSETS = [
   "./",
   "./index.html",

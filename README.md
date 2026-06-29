@@ -4,7 +4,9 @@ Setline is a mobile-first, installable workout log for push, pull, legs, core, a
 
 One workout can mix exercises from any category. It also supports per-set weight and reps, copy-down controls for both, cardio intervals and notes, current body weight, removable library exercises, previous-performance recall, and complete workout history.
 
-The **Data** tab provides per-exercise analytics: an expanding working-weight chart, the latest weight used, complete set history, and compounded average monthly growth. Working weight is the highest weight logged for that exercise in each workout; repetitions do not affect the graph or growth rate.
+The **Data** tab provides both exercise and body-weight analytics. Exercise analytics include an expanding working-weight chart, the latest weight used, complete set history, and compounded average monthly growth. Working weight is the highest weight logged for that exercise in each workout; repetitions do not affect the graph or growth rate. Both graph types can show all time, the last 12 months, the last month, or an individual year.
+
+History can be filtered by category, year, month, or an exact from/through date range. The app uses a light purple theme by default, with optional dark mode in Settings.
 
 ## Use it on a phone
 
