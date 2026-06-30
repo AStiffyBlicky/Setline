@@ -21,8 +21,8 @@ const CATEGORY_META = {
   },
   core: {
     label: "Core",
-    subtitle: "Abs · obliques · stability",
-    muscles: ["abs", "obliques", "stability"],
+    subtitle: "Abs · obliques",
+    muscles: ["abs", "obliques"],
     color: "#a970ff",
   },
   cardio: {
@@ -35,29 +35,28 @@ const CATEGORY_META = {
 
 const DEFAULT_EXERCISES = {
   push: {
-    chest: ["Barbell Bench Press", "Incline Dumbbell Press", "Chest Fly", "Push-Up", "Cable Crossover"],
-    triceps: ["Triceps Pushdown", "Skull Crusher", "Overhead Triceps Extension", "Close-Grip Bench Press", "Dip"],
-    shoulders: ["Overhead Press", "Lateral Raise", "Front Raise", "Reverse Fly", "Arnold Press"],
+    chest: ["Flat Dumbbell Press", "Pec Fly Machine", "Incline Dumbbell Press", "Cable Fly"],
+    triceps: ["Dips", "Tricep Pushdown", "Dumbbell Skull Crusher", "Overhead Cable Tricep Push"],
+    shoulders: ["Dumbbell Shoulder Press", "Side Laterals", "Cable Side Lateral", "Shoulder Press Machine"],
   },
   pull: {
-    biceps: ["Barbell Curl", "Dumbbell Curl", "Hammer Curl", "Preacher Curl", "Cable Curl"],
-    back: ["Deadlift", "Lat Pulldown", "Pull-Up", "Barbell Row", "Seated Cable Row"],
-    forearms: ["Wrist Curl", "Reverse Wrist Curl", "Farmer Carry", "Reverse Curl", "Plate Pinch"],
+    biceps: ["Preacher Curl", "Hammer Curl", "Incline Dumbbell Curl", "Cable Curl"],
+    back: ["Pull-up", "Vertical Row (Wide Grip)", "Vertical Row (Narrow Grip)", "Lat Prayer", "Bent Over Dumbbell Row"],
+    forearms: ["Wrist Curl", "Reverse Wrist Curl"],
   },
   legs: {
-    hamstrings: ["Romanian Deadlift", "Leg Curl", "Good Morning", "Nordic Curl"],
-    glutes: ["Hip Thrust", "Glute Bridge", "Cable Kickback", "Bulgarian Split Squat"],
-    quads: ["Back Squat", "Front Squat", "Leg Press", "Leg Extension", "Walking Lunge"],
-    calves: ["Standing Calf Raise", "Seated Calf Raise", "Single-Leg Calf Raise"],
-    "inner / outer thigh": ["Hip Adduction", "Hip Abduction", "Lateral Lunge", "Cossack Squat"],
+    hamstrings: ["Seated Leg Curl", "Romanian Deadlift", "Lying Leg Curl"],
+    glutes: ["Barbell Squat", "Hip Thrust", "Leg Press"],
+    quads: ["Leg Extension", "Bulgarian Split Squat", "Hack Squat"],
+    calves: ["Seated Calf Raise", "Standing Calf Raise"],
+    "inner / outer thigh": ["Hip Abduction", "Hip Adduction"],
   },
   core: {
-    abs: ["Crunch", "Reverse Crunch", "Hanging Leg Raise", "Ab Wheel Rollout", "V-Up"],
-    obliques: ["Russian Twist", "Side Plank", "Cable Woodchop", "Bicycle Crunch", "Suitcase Carry"],
-    stability: ["Plank", "Dead Bug", "Bird Dog", "Pallof Press", "Hollow Hold"],
+    abs: ["Crunch", "Weighted Crunch", "Hanging Leg Raise"],
+    obliques: ["Bicycle Crunch", "Russian Twist", "Side Plank"],
   },
   cardio: {
-    activity: ["Running", "Cycling", "Walking", "Rowing", "Stair Climber", "Elliptical", "Jump Rope"],
+    activity: ["Running", "Assault Bike", "Elliptical", "Rowing", "Stair Climber", "Walking"],
   },
 };
 
@@ -1140,8 +1139,8 @@ function renderHistory() {
       ${brandMarkup()}
       <span class="meta-line">${data.workouts.length} saved</span>
     </div>
-    <p class="eyebrow">Your training record</p>
     <h1>History</h1>
+    <p class="intro-copy">Your training record</p>
 
     <div class="filter-tabs" aria-label="Filter history">
       ${["all", ...Object.keys(CATEGORY_META)]

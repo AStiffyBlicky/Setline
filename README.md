@@ -8,6 +8,8 @@ The **Data** tab provides both exercise and body-weight analytics. Exercise anal
 
 History can be filtered by category, year, month, or an exact from/through date range. The app uses a light purple theme by default, with optional dark mode in Settings.
 
+All app assets are included locally. Setline does not load third-party fonts, analytics, scripts, or other remote resources. Once installed and cached, it works without an internet connection.
+
 ## Use it on a phone
 
 This is a static progressive web app. Publish the contents of this folder to any HTTPS static host (such as Netlify, Cloudflare Pages, or GitHub Pages), then open that URL on your phone.
@@ -27,4 +29,4 @@ Then open `http://127.0.0.1:8123`.
 
 Workout data is private to the device and browser where Setline is used. It does not require an account or send data to a server. Use **Library → Export backup** periodically; **Import backup** restores that JSON file on another device.
 
-Clearing the browser's site data also clears locally stored workouts unless a backup has been exported.
+Clearing the browser's site data also clears locally stored workouts unless a backup has been exported. No browser-managed offline database can survive an intentional site-data deletion.

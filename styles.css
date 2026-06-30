@@ -34,7 +34,7 @@ body {
   min-height: 100vh;
   background: var(--paper);
   color: var(--ink);
-  font-family: "DM Sans", system-ui, -apple-system, sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -76,7 +76,7 @@ button {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-family: "Manrope", sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 17px;
   font-weight: 800;
   letter-spacing: -0.04em;
@@ -113,7 +113,7 @@ p {
 h1,
 h2,
 h3 {
-  font-family: "Manrope", sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: -0.045em;
 }
 
@@ -205,7 +205,7 @@ h3 {
 
 .category-card strong {
   display: block;
-  font-family: "Manrope", sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 21px;
   letter-spacing: -0.04em;
 }
@@ -271,7 +271,7 @@ h3 {
   border-radius: 14px;
   background: var(--ink);
   color: var(--lime);
-  font-family: "Manrope", sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
   font-weight: 800;
 }
@@ -433,7 +433,7 @@ body.session-open .save-bar {
 
 .session-title strong {
   display: block;
-  font-family: "Manrope", sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 15px;
   letter-spacing: -0.03em;
 }
@@ -937,7 +937,7 @@ textarea {
 
 .history-category strong {
   display: block;
-  font-family: "Manrope", sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 16px;
   text-transform: capitalize;
 }
@@ -1734,7 +1734,7 @@ textarea:focus {
   display: block;
   margin: 8px 0 5px;
   color: var(--ink);
-  font-family: "Manrope", sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: clamp(24px, 7vw, 33px);
   letter-spacing: -0.05em;
   line-height: 1;
@@ -1806,7 +1806,7 @@ textarea:focus {
   min-width: 100%;
   height: 252px;
   overflow: visible;
-  font-family: "DM Sans", system-ui, sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .chart-grid-line {
@@ -1947,7 +1947,7 @@ textarea:focus {
 
 .analytics-working-weight {
   color: #d6b4ff;
-  font-family: "Manrope", sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 13px;
   white-space: nowrap;
 }
@@ -2289,4 +2289,19 @@ body.light-theme .growth-card > strong {
 
 body.light-theme .growth-card > strong.is-negative {
   color: var(--danger);
+}
+
+body.light-theme .body-weight-summary .text-button {
+  color: #52206f;
+  font-weight: 800;
+}
+
+body.light-theme .analytics-working-weight {
+  color: #57206f;
+}
+
+body.light-theme .analytics-title-row .category-tag {
+  color: #55206f;
+  background: #ead8f4;
+  border-color: #c9a6dc;
 }

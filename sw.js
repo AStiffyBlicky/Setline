@@ -1,4 +1,4 @@
-const CACHE_NAME = "setline-v6";
+const CACHE_NAME = "setline-v8";
 const APP_ASSETS = [
   "./",
   "./index.html",
@@ -26,15 +26,17 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+  if (new URL(event.request.url).origin !== self.location.origin) {
+    event.respondWith(Response.error());
+    return;
+  }
   event.respondWith(
     caches.match(event.request).then(
       (cached) =>
         cached ||
         fetch(event.request).then((response) => {
-          if (new URL(event.request.url).origin === self.location.origin) {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-          }
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
           return response;
         })
     )
