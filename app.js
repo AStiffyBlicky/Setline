@@ -1,33 +1,41 @@
 const STORAGE_KEY = "setline-data-v1";
+const EXERCISE_CATEGORIES = ["push", "pull", "legs", "core", "cardio"];
+const WORKOUT_CATEGORIES = ["push", "pull", "legs", "core", "fullbody", "cardio"];
 
 const CATEGORY_META = {
   push: {
     label: "Push",
-    subtitle: "Chest · triceps · shoulders",
+    subtitle: "Chest · Triceps · Shoulders",
     muscles: ["chest", "triceps", "shoulders"],
     color: "#c77dff",
   },
   pull: {
     label: "Pull",
-    subtitle: "Biceps · back · forearms",
+    subtitle: "Biceps · Back · Forearms",
     muscles: ["biceps", "back", "forearms"],
     color: "#8f82ff",
   },
   legs: {
     label: "Legs",
-    subtitle: "Hamstrings · glutes · quads · more",
+    subtitle: "Hamstrings · Glutes · Quads · More",
     muscles: ["hamstrings", "glutes", "quads", "calves", "inner / outer thigh"],
     color: "#e078b5",
   },
   core: {
     label: "Core",
-    subtitle: "Abs · obliques",
+    subtitle: "Abs · Obliques",
     muscles: ["abs", "obliques"],
     color: "#a970ff",
   },
+  fullbody: {
+    label: "Full Body",
+    subtitle: "Push · Pull · Legs · Core",
+    muscles: [],
+    color: "#b06fe8",
+  },
   cardio: {
     label: "Cardio",
-    subtitle: "Intervals · activities · notes",
+    subtitle: "Intervals · Activities · Notes",
     muscles: ["activity"],
     color: "#63c6b0",
   },
@@ -75,6 +83,10 @@ const state = {
   analyticsExerciseId: null,
   analyticsMode: "exercise",
   analyticsRange: "all",
+  analyticsGrowthPeriod: "monthly",
+  cardioMetric: "duration",
+  pendingStartCategory: null,
+  pendingPreviousWorkoutId: null,
   deferredInstallPrompt: null,
 };
 
@@ -82,7 +94,7 @@ let data = loadData();
 
 function defaultData() {
   return {
-    version: 3,
+    version: 4,
     workouts: [],
     customExercises: [],
     hiddenExercises: [],
@@ -91,6 +103,7 @@ function defaultData() {
     currentWeight: "",
     weightUpdatedAt: null,
     bodyWeightHistory: [],
+    exerciseNotes: {},
     theme: "light",
   };
 }
@@ -100,7 +113,19 @@ function normalizeEntry(entry, fallbackCategory) {
   return {
     ...entry,
     category,
-    sameReps: entry.type === "strength" ? Boolean(entry.sameReps) : undefined,
+    sameWeight:
+      entry.type === "strength"
+        ? typeof entry.sameWeight === "boolean"
+          ? entry.sameWeight
+          : true
+        : undefined,
+    sameReps:
+      entry.type === "strength"
+        ? typeof entry.sameReps === "boolean"
+          ? entry.sameReps
+          : true
+        : undefined,
+    collapsed: false,
   };
 }
 
@@ -124,11 +149,15 @@ function loadData() {
     return {
       ...defaultData(),
       ...saved,
-      version: 3,
+      version: 4,
       workouts: Array.isArray(saved.workouts) ? saved.workouts.map(normalizeWorkout) : [],
       customExercises: Array.isArray(saved.customExercises) ? saved.customExercises : [],
       hiddenExercises: Array.isArray(saved.hiddenExercises) ? saved.hiddenExercises : [],
       bodyWeightHistory: Array.isArray(saved.bodyWeightHistory) ? saved.bodyWeightHistory : [],
+      exerciseNotes:
+        saved.exerciseNotes && typeof saved.exerciseNotes === "object"
+          ? saved.exerciseNotes
+          : {},
       draft: saved.draft ? normalizeWorkout(saved.draft) : null,
     };
   } catch {
@@ -172,6 +201,7 @@ function categoryIcon(category) {
     pull: '<path d="M5 4v5a7 7 0 0 0 14 0V4M5 8h4M15 8h4M12 16v4M9 20h6"/>',
     legs: '<path d="M9 3v7l-3 4v7M15 3v7l3 4v7M9 10h6M6 17h4M14 17h4"/>',
     core: '<path d="M8 4c1.5 1 2.8 1.5 4 1.5S14.5 5 16 4M8 20c1.5-1 2.8-1.5 4-1.5s2.5.5 4 1.5M9 6.5 8 17.5M15 6.5l1 11M8.5 12h7"/>',
+    fullbody: '<path d="M4 9v6M7 7v10M17 7v10M20 9v6M7 12h10"/><path d="M12 4v16"/>',
     cardio: '<path d="M3 13h4l2-6 4 11 3-8 2 3h3"/><path d="M4 5.5A5 5 0 0 1 12 7a5 5 0 0 1 8-1.5"/>',
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[category]}</svg>`;
@@ -233,21 +263,18 @@ function workoutCategories(workout) {
     ...new Set(
       (workout.exercises || [])
         .map((entry) => entry.category || workout.category)
-        .filter((category) => CATEGORY_META[category])
+        .filter((category) => EXERCISE_CATEGORIES.includes(category))
     ),
   ];
   return categories.length ? categories : [workout.category || "push"];
 }
 
 function workoutLabel(workout) {
-  const categories = workoutCategories(workout);
-  return categories.length > 1
-    ? "Mixed"
-    : CATEGORY_META[categories[0]]?.label || "Workout";
+  return CATEGORY_META[workout.category]?.label || "Workout";
 }
 
 function getExerciseById(exerciseId) {
-  for (const category of Object.keys(CATEGORY_META)) {
+  for (const category of EXERCISE_CATEGORIES) {
     for (const muscle of CATEGORY_META[category].muscles) {
       const exercise = allExercises(category, muscle, { includeHidden: true }).find(
         (item) => item.id === exerciseId
@@ -256,6 +283,18 @@ function getExerciseById(exerciseId) {
     }
   }
   return null;
+}
+
+function removeExerciseFromLibrary(exerciseId) {
+  const exercise = getExerciseById(exerciseId);
+  if (!exercise) return null;
+  if (exercise.custom) {
+    data.customExercises = data.customExercises.filter((item) => item.id !== exercise.id);
+  } else if (!data.hiddenExercises.includes(exercise.id)) {
+    data.hiddenExercises.push(exercise.id);
+  }
+  saveData();
+  return exercise;
 }
 
 function findPreviousEntry(exerciseId) {
@@ -271,8 +310,7 @@ function findPreviousEntry(exerciseId) {
 
 function availableAnalyticsExercises() {
   const exerciseMap = new Map();
-  for (const category of Object.keys(CATEGORY_META)) {
-    if (category === "cardio") continue;
+  for (const category of EXERCISE_CATEGORIES) {
     for (const muscle of CATEGORY_META[category].muscles) {
       for (const exercise of allExercises(category, muscle)) {
         exerciseMap.set(exercise.id, exercise);
@@ -281,7 +319,7 @@ function availableAnalyticsExercises() {
   }
   for (const workout of data.workouts) {
     for (const entry of workout.exercises || []) {
-      if (entry.type !== "strength" || exerciseMap.has(entry.exerciseId)) continue;
+      if (exerciseMap.has(entry.exerciseId)) continue;
       exerciseMap.set(entry.exerciseId, {
         id: entry.exerciseId,
         name: entry.name,
@@ -291,7 +329,7 @@ function availableAnalyticsExercises() {
       });
     }
   }
-  const categoryOrder = Object.keys(CATEGORY_META);
+  const categoryOrder = EXERCISE_CATEGORIES;
   return [...exerciseMap.values()].sort(
     (a, b) =>
       categoryOrder.indexOf(a.category) - categoryOrder.indexOf(b.category) ||
@@ -310,8 +348,9 @@ function exerciseHistory(exerciseId) {
       );
       if (!entry) return [];
       const weights = (entry.sets || [])
+        .filter((set) => String(set.weight ?? "").trim() !== "")
         .map((set) => Number(set.weight))
-        .filter((weight) => Number.isFinite(weight) && weight > 0);
+        .filter((weight) => Number.isFinite(weight));
       return [
         {
           date: new Date(workout.completedAt || workout.startedAt),
@@ -325,6 +364,34 @@ function exerciseHistory(exerciseId) {
 
 function exerciseWeightSeries(exerciseId) {
   return exerciseHistory(exerciseId).filter((point) => point.weight !== null);
+}
+
+function cardioHistory(exerciseId) {
+  return [...data.workouts]
+    .sort(
+      (a, b) => new Date(a.completedAt || a.startedAt) - new Date(b.completedAt || b.startedAt)
+    )
+    .flatMap((workout) => {
+      const entry = workout.exercises?.find(
+        (item) => item.exerciseId === exerciseId && item.type === "cardio"
+      );
+      if (!entry) return [];
+      const intervals = entry.intervals || [];
+      const totalSeconds = intervals.reduce(
+        (total, interval) =>
+          total + Number(interval.minutes || 0) * 60 + Number(interval.seconds || 0),
+        0
+      );
+      return [
+        {
+          date: new Date(workout.completedAt || workout.startedAt),
+          totalSeconds,
+          intervalCount: intervals.length,
+          intervals,
+          workoutId: workout.id,
+        },
+      ];
+    });
 }
 
 function convertWeight(value, fromUnit, toUnit) {
@@ -432,14 +499,28 @@ function renderAnalyticsRangeSelector(points) {
   `;
 }
 
-function compoundedMonthlyGrowth(points) {
+function compoundedPeriodGrowth(points, periodDays = 365.2425 / 12) {
   if (points.length < 2) return null;
   const first = points[0];
   const latest = points.at(-1);
   const elapsedDays = (latest.date - first.date) / 86400000;
-  if (elapsedDays < 28 || first.weight <= 0 || latest.weight <= 0) return null;
-  const elapsedMonths = elapsedDays / (365.2425 / 12);
-  return (Math.pow(latest.weight / first.weight, 1 / elapsedMonths) - 1) * 100;
+  if (elapsedDays < periodDays || first.weight === 0) return null;
+  const elapsedPeriods = elapsedDays / periodDays;
+  if (first.weight > 0 && latest.weight > 0) {
+    return (Math.pow(latest.weight / first.weight, 1 / elapsedPeriods) - 1) * 100;
+  }
+  return ((latest.weight - first.weight) / Math.abs(first.weight) / elapsedPeriods) * 100;
+}
+
+function compoundedMonthlyGrowth(points) {
+  return compoundedPeriodGrowth(points, 365.2425 / 12);
+}
+
+function twoWeekPercentChange(points) {
+  const cutoff = Date.now() - 14 * 86400000;
+  const recent = points.filter((point) => point.date.getTime() >= cutoff);
+  if (recent.length < 2 || recent[0].weight <= 0) return null;
+  return ((recent.at(-1).weight - recent[0].weight) / recent[0].weight) * 100;
 }
 
 function formatWeight(value) {
@@ -527,7 +608,7 @@ function renderHome() {
     </div>
 
     <div class="category-grid">
-      ${Object.entries(CATEGORY_META)
+      ${WORKOUT_CATEGORIES.map((key) => [key, CATEGORY_META[key]])
         .map(
           ([key, category]) => `
             <button class="category-card" data-action="start-category" data-category="${key}">
@@ -542,7 +623,7 @@ function renderHome() {
     </div>
 
     <div class="section-heading">
-      <h2>Your rhythm</h2>
+      <h2>Your Stats</h2>
       <p>${workouts.length} total</p>
     </div>
 
@@ -550,7 +631,7 @@ function renderHome() {
       <span class="stat-icon">${thisWeek}</span>
       <span>
         <strong>Sessions in the last 7 days</strong>
-        <span>${thisWeek ? "Your consistency is taking shape." : "Your next session starts the streak."}</span>
+        ${thisWeek ? "" : "<span>Your next session starts the streak.</span>"}
       </span>
     </div>
     <div class="quick-stat">
@@ -564,7 +645,7 @@ function renderHome() {
       <span class="stat-icon">BW</span>
       <span>
         <strong>${data.currentWeight ? `${escapeHtml(data.currentWeight)} ${data.unit}` : "Add your current weight"}</strong>
-        <span>${data.weightUpdatedAt ? `Updated ${relativeDate(data.weightUpdatedAt)}` : "Keep your latest body weight close at hand."}</span>
+        ${data.weightUpdatedAt ? `<span>Updated ${relativeDate(data.weightUpdatedAt)}</span>` : ""}
       </span>
     </button>
 
@@ -591,30 +672,120 @@ function createSession(category) {
   };
 }
 
-function startSession(category) {
-  if (data.draft) {
-    const replace = window.confirm(
-      `You have an unfinished ${workoutLabel(data.draft)} session. Start a new one instead?`
-    );
-    if (!replace) {
-      resumeDraft();
-      return;
-    }
+function workoutBrowseCategory(category) {
+  return EXERCISE_CATEGORIES.includes(category) ? category : "push";
+}
+
+function latestWorkoutOfType(category) {
+  return [...data.workouts]
+    .filter((workout) => workout.category === category && workout.exercises?.length)
+    .sort(
+      (a, b) => new Date(b.completedAt || b.startedAt) - new Date(a.completedAt || a.startedAt)
+    )[0];
+}
+
+function clonePreviousEntry(entry) {
+  if (entry.type === "cardio") {
+    return {
+      entryId: uid("entry"),
+      exerciseId: entry.exerciseId,
+      name: entry.name,
+      muscle: "activity",
+      category: "cardio",
+      type: "cardio",
+      collapsed: false,
+      intervals: (entry.intervals?.length ? entry.intervals : [{ minutes: "", seconds: "", note: "" }])
+        .map((interval) => ({
+          minutes: String(interval.minutes ?? ""),
+          seconds: String(interval.seconds ?? ""),
+          note: "",
+        })),
+    };
   }
+  return {
+    entryId: uid("entry"),
+    exerciseId: entry.exerciseId,
+    name: entry.name,
+    muscle: entry.muscle,
+    category: entry.category || "push",
+    type: "strength",
+    collapsed: false,
+    sameWeight: typeof entry.sameWeight === "boolean" ? entry.sameWeight : true,
+    sameReps: typeof entry.sameReps === "boolean" ? entry.sameReps : true,
+    sets: (entry.sets?.length ? entry.sets : [{ weight: "", reps: "" }]).map((set) => ({
+      weight: String(set.weight ?? ""),
+      reps: String(set.reps ?? ""),
+    })),
+  };
+}
+
+function beginSession(category, previousWorkout = null) {
   state.currentSession = createSession(category);
-  state.selectedCategory = category;
-  state.selectedMuscle = CATEGORY_META[category].muscles[0];
+  if (previousWorkout) {
+    state.currentSession.exercises = previousWorkout.exercises.map(clonePreviousEntry);
+  }
+  state.selectedCategory = workoutBrowseCategory(category);
+  state.selectedMuscle = CATEGORY_META[state.selectedCategory].muscles[0];
   data.draft = state.currentSession;
   saveData();
+  closeModal();
   state.route = "session";
   render();
+}
+
+function offerPreviousSession(category) {
+  const previous = latestWorkoutOfType(category);
+  if (!previous) {
+    beginSession(category);
+    return;
+  }
+  state.pendingStartCategory = category;
+  state.pendingPreviousWorkoutId = previous.id;
+  document.querySelector("#modal-root").innerHTML = `
+    <div class="modal-backdrop">
+      <section class="modal-sheet confirm-sheet" role="dialog" aria-modal="true" aria-labelledby="repeat-session-title">
+        <div class="modal-handle"></div>
+        <h2 id="repeat-session-title">Repeat your last ${escapeHtml(workoutLabel(previous))} workout?</h2>
+        <p>Add all ${previous.exercises.length} previous ${
+          previous.exercises.length === 1 ? "exercise" : "exercises"
+        } with their last sets, reps, weights, intervals, and switch settings.</p>
+        <div class="modal-actions stacked-actions">
+          <button class="primary-button" data-action="start-with-previous">Use previous exercises</button>
+          <button class="secondary-button" data-action="start-empty-session">Start empty</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function startSession(category) {
+  if (data.draft) {
+    state.pendingStartCategory = category;
+    document.querySelector("#modal-root").innerHTML = `
+      <div class="modal-backdrop">
+        <section class="modal-sheet confirm-sheet" role="dialog" aria-modal="true" aria-labelledby="replace-session-title">
+          <div class="modal-handle"></div>
+          <h2 id="replace-session-title">You have an unfinished ${escapeHtml(
+            workoutLabel(data.draft)
+          )} session. Start a new one instead?</h2>
+          <div class="modal-actions stacked-actions">
+            <button class="danger-button" data-action="confirm-replace-session">Start a new session</button>
+            <button class="secondary-button" data-action="resume-draft">Keep unfinished session</button>
+          </div>
+        </section>
+      </div>
+    `;
+    return;
+  }
+  offerPreviousSession(category);
 }
 
 function resumeDraft() {
   if (!data.draft) return;
   state.currentSession = data.draft;
-  state.selectedCategory = data.draft.category;
-  state.selectedMuscle = CATEGORY_META[data.draft.category].muscles[0];
+  state.selectedCategory = workoutBrowseCategory(data.draft.category);
+  state.selectedMuscle = CATEGORY_META[state.selectedCategory].muscles[0];
+  closeModal();
   state.route = "session";
   render();
 }
@@ -626,9 +797,9 @@ function renderSession() {
     return renderHome();
   }
   state.currentSession = session;
-  const selectedCategory = CATEGORY_META[state.selectedCategory]
+  const selectedCategory = EXERCISE_CATEGORIES.includes(state.selectedCategory)
     ? state.selectedCategory
-    : session.category;
+    : workoutBrowseCategory(session.category);
   state.selectedCategory = selectedCategory;
   const selectedMeta = CATEGORY_META[selectedCategory];
   const muscle = selectedMeta.muscles.includes(state.selectedMuscle)
@@ -639,7 +810,7 @@ function renderSession() {
   const isCardio = selectedCategory === "cardio";
   const usedCategories = workoutCategories(session);
   const displayLabel = workoutLabel(session);
-  const heroColor = usedCategories.length > 1 ? "#ad7cff" : CATEGORY_META[usedCategories[0]].color;
+  const heroColor = CATEGORY_META[session.category]?.color || CATEGORY_META.push.color;
 
   return `
     <header class="session-header">
@@ -664,7 +835,7 @@ function renderSession() {
     </section>
 
     <div class="muscle-tabs category-tabs" aria-label="Exercise category">
-      ${Object.entries(CATEGORY_META)
+      ${EXERCISE_CATEGORIES.map((category) => [category, CATEGORY_META[category]])
         .map(
           ([category, meta]) => `
             <button class="chip ${category === selectedCategory ? "is-active" : ""}" data-action="select-session-category" data-category="${category}">
@@ -701,7 +872,7 @@ function renderSession() {
             ${exercises
               .map(
                 (exercise) =>
-                  `<option value="${escapeAttr(exercise.id)}">${escapeHtml(exercise.name)}${exercise.custom ? " · custom" : ""}</option>`
+                  `<option value="${escapeAttr(exercise.id)}">${escapeHtml(exercise.name)}</option>`
               )
               .join("")}
           </select>
@@ -772,6 +943,7 @@ function renderSession() {
 }
 
 function renderStrengthEntry(entry) {
+  if (entry.collapsed) return renderCollapsedEntry(entry);
   const previous = findPreviousEntry(entry.exerciseId);
   const unit = data.unit;
   return `
@@ -785,6 +957,7 @@ function renderStrengthEntry(entry) {
       </div>
 
       ${renderPrevious(previous, "strength")}
+      ${renderExercisePermanentNote(entry)}
 
       <div class="same-weight-row">
         <span>Use first-set weight for all sets</span>
@@ -825,7 +998,6 @@ function renderStrengthEntry(entry) {
                   <input
                     class="number-input"
                     type="number"
-                    min="0"
                     step="0.5"
                     inputmode="decimal"
                     value="${escapeAttr(set.weight)}"
@@ -859,7 +1031,38 @@ function renderStrengthEntry(entry) {
           .join("")}
       </div>
       <button class="add-set-button" data-action="add-set" data-entry-id="${escapeAttr(entry.entryId)}">+ Add set</button>
+      <button class="done-entry-button" data-action="collapse-entry" data-entry-id="${escapeAttr(entry.entryId)}">Done</button>
     </article>
+  `;
+}
+
+function renderCollapsedEntry(entry) {
+  return `
+    <article class="exercise-card collapsed-exercise-card" data-entry-id="${escapeAttr(
+      entry.entryId
+    )}">
+      <button class="collapsed-entry-button" data-action="expand-entry" data-entry-id="${escapeAttr(
+        entry.entryId
+      )}" aria-label="Edit ${escapeAttr(entry.name)}">
+        <strong>${escapeHtml(entry.name)}</strong>
+        <span>Edit ›</span>
+      </button>
+    </article>
+  `;
+}
+
+function renderExercisePermanentNote(entry) {
+  return `
+    <div class="permanent-note">
+      <label for="exercise-note-${escapeAttr(entry.entryId)}">Permanent exercise note</label>
+      <textarea
+        id="exercise-note-${escapeAttr(entry.entryId)}"
+        data-action="update-exercise-note"
+        data-exercise-id="${escapeAttr(entry.exerciseId)}"
+        placeholder="Setup cues, machine settings, form reminders…"
+      >${escapeHtml(data.exerciseNotes[entry.exerciseId] || "")}</textarea>
+      <small>Saved with this exercise for future workouts.</small>
+    </div>
   `;
 }
 
@@ -909,6 +1112,7 @@ function renderPrevious(previous, type) {
 }
 
 function renderCardioEntry(entry) {
+  if (entry.collapsed) return renderCollapsedEntry(entry);
   const previous = findPreviousEntry(entry.exerciseId);
   return `
     <article class="exercise-card" data-entry-id="${escapeAttr(entry.entryId)}">
@@ -920,6 +1124,7 @@ function renderCardioEntry(entry) {
         <button class="mini-menu" data-action="remove-entry" data-entry-id="${escapeAttr(entry.entryId)}" aria-label="Remove ${escapeAttr(entry.name)}">×</button>
       </div>
       ${renderPrevious(previous, "cardio")}
+      ${renderExercisePermanentNote(entry)}
       ${entry.intervals
         .map(
           (interval, index) => `
@@ -974,6 +1179,7 @@ function renderCardioEntry(entry) {
         )
         .join("")}
       <button class="add-set-button" data-action="add-interval" data-entry-id="${escapeAttr(entry.entryId)}">+ Add interval</button>
+      <button class="done-entry-button" data-action="collapse-entry" data-entry-id="${escapeAttr(entry.entryId)}">Done</button>
     </article>
   `;
 }
@@ -1010,8 +1216,10 @@ function addEntryById(category, muscle, exerciseId, options = {}) {
     });
     return;
   }
-  state.currentSession.exercises.push(
-    category === "cardio"
+  const previous = findPreviousEntry(exercise.id);
+  const entry = previous
+    ? clonePreviousEntry(previous.entry)
+    : category === "cardio"
       ? {
           entryId: uid("entry"),
           exerciseId: exercise.id,
@@ -1019,6 +1227,7 @@ function addEntryById(category, muscle, exerciseId, options = {}) {
           muscle: "activity",
           category,
           type: "cardio",
+          collapsed: false,
           intervals: [{ minutes: "", seconds: "", note: "" }],
         }
       : {
@@ -1028,15 +1237,20 @@ function addEntryById(category, muscle, exerciseId, options = {}) {
           muscle: exercise.muscle,
           category,
           type: "strength",
+          collapsed: false,
           sameWeight: true,
-          sameReps: false,
+          sameReps: true,
           sets: [
             { weight: "", reps: "" },
             { weight: "", reps: "" },
             { weight: "", reps: "" },
           ],
-        }
-  );
+        };
+  entry.exerciseId = exercise.id;
+  entry.name = exercise.name;
+  entry.category = category;
+  entry.muscle = category === "cardio" ? "activity" : exercise.muscle;
+  state.currentSession.exercises.push(entry);
   persistDraft();
   if (options.closeModal) closeModal();
   render();
@@ -1075,7 +1289,7 @@ function saveWorkout() {
   data.draft = null;
   saveData();
   state.currentSession = null;
-  state.historyFilter = workoutCategories(session).length > 1 ? "all" : workoutCategories(session)[0];
+  state.historyFilter = session.category;
   state.route = "history";
   render();
   toast("Workout saved");
@@ -1127,7 +1341,7 @@ function renderHistory() {
     .filter(
       (workout) =>
         (state.historyFilter === "all" ||
-          workoutCategories(workout).includes(state.historyFilter)) &&
+          workout.category === state.historyFilter) &&
         historyDateMatches(workout)
     )
     .sort(
@@ -1143,11 +1357,11 @@ function renderHistory() {
     <p class="intro-copy">Your training record</p>
 
     <div class="filter-tabs" aria-label="Filter history">
-      ${["all", ...Object.keys(CATEGORY_META)]
+      ${["all", ...WORKOUT_CATEGORIES]
         .map(
           (category) => `
             <button class="chip ${state.historyFilter === category ? "is-active" : ""}" data-action="filter-history" data-category="${category}">
-              ${category}
+              ${category === "all" ? "All" : CATEGORY_META[category].label}
             </button>
           `
         )
@@ -1223,7 +1437,13 @@ function renderHistory() {
         : `
           <div class="empty-state">
             <span class="empty-state-icon">↺</span>
-            <h3>${data.workouts.length ? `No ${state.historyFilter} workouts yet` : "Your history starts here"}</h3>
+            <h3>${
+              data.workouts.length
+                ? `No ${
+                    CATEGORY_META[state.historyFilter]?.label || state.historyFilter
+                  } workouts yet`
+                : "Your history starts here"
+            }</h3>
             <p>Finish a workout and its full set-by-set log will land here.</p>
             <button class="primary-button" data-route="home">Start training</button>
           </div>
@@ -1234,9 +1454,7 @@ function renderHistory() {
 
 function renderHistoryCard(workout) {
   const categories = workoutCategories(workout);
-  const meta = categories.length > 1
-    ? { label: "Mixed", color: "#ad7cff" }
-    : CATEGORY_META[categories[0]];
+  const meta = CATEGORY_META[workout.category] || CATEGORY_META.push;
   const strengthSets = workout.exercises.reduce(
     (total, entry) => total + (entry.sets?.length || 0),
     0
@@ -1256,22 +1474,30 @@ function renderHistoryCard(workout) {
   const categorySummary = categories.map((category) => CATEGORY_META[category].label).join(" + ");
 
   return `
-    <button class="history-card" data-action="open-workout" data-workout-id="${escapeAttr(workout.id)}" style="--tone:${meta.color}">
-      <div class="history-top">
-        <span class="history-category">
-          <span class="history-dot"></span>
-          <span>
-            <strong>${meta.label}</strong>
-            <small>${categorySummary} · ${workout.exercises.length} ${workout.exercises.length === 1 ? "exercise" : "exercises"} · ${volumeSummary}</small>
+    <div class="history-card-wrap" data-workout-id="${escapeAttr(workout.id)}">
+      <button class="history-card" data-action="open-workout" data-workout-id="${escapeAttr(workout.id)}" style="--tone:${meta.color}">
+        <div class="history-top">
+          <span class="history-category">
+            <span class="history-dot"></span>
+            <span>
+              <strong>${meta.label}</strong>
+              <small>${categorySummary} · ${workout.exercises.length} ${workout.exercises.length === 1 ? "exercise" : "exercises"} · ${volumeSummary}</small>
+            </span>
           </span>
-        </span>
-        <span class="history-date">${relativeDate(workout.completedAt || workout.startedAt)}<br>${formatTime(workout.startedAt)}</span>
-      </div>
-      <div class="history-summary">
-        ${exerciseNames}
-        ${workout.exercises.length > 3 ? `<span>+${workout.exercises.length - 3} more</span>` : ""}
-      </div>
-    </button>
+          <span class="history-date">${relativeDate(workout.completedAt || workout.startedAt)}<br>${formatTime(workout.startedAt)}</span>
+        </div>
+        <div class="history-summary">
+          ${exerciseNames}
+          ${workout.exercises.length > 3 ? `<span>+${workout.exercises.length - 3} more</span>` : ""}
+        </div>
+      </button>
+      <button class="history-quick-delete" data-action="quick-delete-workout" data-workout-id="${escapeAttr(
+        workout.id
+      )}" aria-label="Delete ${escapeAttr(meta.label)} workout">
+        <span aria-hidden="true">🗑</span>
+        <small>Delete?</small>
+      </button>
+    </div>
   `;
 }
 
@@ -1282,9 +1508,7 @@ function renderDetail() {
     return renderHistory();
   }
   const categories = workoutCategories(workout);
-  const meta = categories.length > 1
-    ? { label: "Mixed", color: "#ad7cff" }
-    : CATEGORY_META[categories[0]];
+  const meta = CATEGORY_META[workout.category] || CATEGORY_META.push;
   return `
     <header class="session-header">
       <button class="icon-button" data-action="close-detail" aria-label="Back">‹</button>
@@ -1395,10 +1619,10 @@ function renderLibrary() {
       <button class="icon-button" data-action="open-add-exercise" data-category="${category}" data-muscle="${escapeAttr(meta.muscles[0])}" aria-label="Add exercise">+</button>
     </div>
     <h1>Exercise library</h1>
-    <p class="intro-copy">Keep only the movements you use. Removing a built-in exercise never changes your past workouts.</p>
+    <p class="intro-copy">Keep only the movements you use. Removing an exercise never changes your past workouts.</p>
 
     <div class="filter-tabs" aria-label="Filter exercises">
-      ${Object.keys(CATEGORY_META)
+      ${EXERCISE_CATEGORIES
         .map(
           (item) => `
             <button class="chip ${item === category ? "is-active" : ""}" data-action="filter-library" data-category="${item}">
@@ -1469,6 +1693,9 @@ function renderWeightChart(points, options = {}) {
   const emptyCopy =
     options.emptyCopy || "Log a weight for this exercise and its graph will begin here.";
   const ariaLabel = options.ariaLabel || "Working weight";
+  const axisTitle = options.axisTitle || `Weight (${data.unit})`;
+  const valueSuffix = options.valueSuffix ?? ` ${data.unit}`;
+  const valueFormatter = options.valueFormatter || formatWeight;
   if (!points.length) {
     return `
       <div class="analytics-empty-chart">
@@ -1484,15 +1711,22 @@ function renderWeightChart(points, options = {}) {
   const padding = { top: 24, right: 22, bottom: 48, left: 50 };
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
-  const highestWeight = Math.max(...points.map((point) => point.weight));
-  const tickStep = Math.max(1, Math.ceil((highestWeight * 1.12) / 4 / 5) * 5);
-  const yMax = tickStep * 4;
+  const values = points.map((point) => point.weight);
+  const rawMin = Math.min(...values);
+  const rawMax = Math.max(...values);
+  let yMin = rawMin < 0 ? rawMin * 1.12 : 0;
+  let yMax = rawMax > 0 ? rawMax * 1.12 : 0;
+  if (yMin === yMax) {
+    yMin -= 1;
+    yMax += 1;
+  }
+  const yRange = yMax - yMin;
   const coordinates = points.map((point, index) => ({
     x:
       points.length === 1
         ? padding.left + plotWidth / 2
         : padding.left + (index / (points.length - 1)) * plotWidth,
-    y: padding.top + plotHeight - (point.weight / yMax) * plotHeight,
+    y: padding.top + ((yMax - point.weight) / yRange) * plotHeight,
     point,
   }));
   const linePoints = coordinates.map(({ x, y }) => `${x},${y}`).join(" ");
@@ -1518,12 +1752,12 @@ function renderWeightChart(points, options = {}) {
         ${[0, 1, 2, 3, 4]
           .map((index) => {
             const y = padding.top + (index / 4) * plotHeight;
-            const value = yMax - index * tickStep;
+            const value = yMax - (index / 4) * yRange;
             return `
               <line class="chart-grid-line" x1="${padding.left}" y1="${y}" x2="${
                 padding.left + plotWidth
               }" y2="${y}" />
-              <text class="chart-y-label" x="${padding.left - 9}" y="${y + 4}" text-anchor="end">${formatWeight(
+              <text class="chart-y-label" x="${padding.left - 9}" y="${y + 4}" text-anchor="end">${valueFormatter(
                 value
               )}</text>
             `;
@@ -1531,7 +1765,7 @@ function renderWeightChart(points, options = {}) {
           .join("")}
         <text class="chart-axis-title" x="13" y="${padding.top + plotHeight / 2}" text-anchor="middle" transform="rotate(-90 13 ${
           padding.top + plotHeight / 2
-        })">Weight (${data.unit})</text>
+        })">${escapeHtml(axisTitle)}</text>
         ${
           points.length > 1
             ? `<polygon class="chart-area" points="${areaPoints}" />`
@@ -1544,9 +1778,11 @@ function renderWeightChart(points, options = {}) {
               <g>
                 <circle class="chart-point-halo" cx="${x}" cy="${y}" r="8" />
                 <circle class="chart-point" cx="${x}" cy="${y}" r="4">
-                  <title>${formatChartDate(point.date)}: ${formatWeight(point.weight)} ${data.unit}</title>
+                  <title>${formatChartDate(point.date)}: ${valueFormatter(point.weight)}${escapeHtml(
+                    valueSuffix
+                  )}</title>
                 </circle>
-                <text class="chart-value-label" x="${x}" y="${Math.max(13, y - 12)}" text-anchor="middle">${formatWeight(
+                <text class="chart-value-label" x="${x}" y="${Math.max(13, y - 12)}" text-anchor="middle">${valueFormatter(
                   point.weight
                 )}</text>
                 <text class="chart-x-label" x="${x}" y="${height - 19}" text-anchor="middle">${formatChartDate(
@@ -1574,6 +1810,163 @@ function renderAnalyticsModeSwitch() {
   `;
 }
 
+function renderDataExercisePicker(exercises) {
+  return `
+    <section class="analytics-picker">
+      <label for="data-exercise-select">Exercise</label>
+      <div class="select-wrap">
+        <select id="data-exercise-select">
+          ${EXERCISE_CATEGORIES.map((category) => {
+            const categoryExercises = exercises.filter(
+              (exercise) => exercise.category === category
+            );
+            if (!categoryExercises.length) return "";
+            return `
+              <optgroup label="${CATEGORY_META[category].label}">
+                ${categoryExercises
+                  .map(
+                    (exercise) => `
+                      <option value="${escapeAttr(exercise.id)}" ${
+                        exercise.id === state.analyticsExerciseId ? "selected" : ""
+                      }>${escapeHtml(exercise.name)}</option>
+                    `
+                  )
+                  .join("")}
+              </optgroup>
+            `;
+          }).join("")}
+        </select>
+      </div>
+    </section>
+  `;
+}
+
+function renderGrowthPeriodSwitch() {
+  return `
+    <div class="analytics-option-switch" aria-label="Growth calculation period">
+      <button class="${state.analyticsGrowthPeriod === "monthly" ? "is-active" : ""}" data-action="set-growth-period" data-period="monthly">
+        Average monthly growth
+      </button>
+      <button class="${state.analyticsGrowthPeriod === "biweekly" ? "is-active" : ""}" data-action="set-growth-period" data-period="biweekly">
+        Average biweekly growth
+      </button>
+    </div>
+  `;
+}
+
+function renderCardioExerciseData(exercises, selectedExercise) {
+  const fullHistory = cardioHistory(selectedExercise.id);
+  const durationMode = state.cardioMetric !== "intervals";
+  const allPoints = fullHistory.map((item) => ({
+    ...item,
+    weight: durationMode ? item.totalSeconds / 60 : item.intervalCount,
+  }));
+  const points = filterAnalyticsRange(allPoints);
+  const latest = points.at(-1);
+  const highest = points.length
+    ? Math.max(...points.map((point) => point.weight))
+    : null;
+  const metricLabel = durationMode ? "Total interval time" : "Number of intervals";
+  const formatMetric = (value) =>
+    durationMode ? `${formatWeight(value)} min` : `${formatWeight(value)}`;
+
+  return `
+    <div class="topbar">
+      ${brandMarkup()}
+      <span class="meta-line">${points.length} cardio ${
+        points.length === 1 ? "session" : "sessions"
+      }</span>
+    </div>
+    ${renderAnalyticsModeSwitch()}
+    <h1>Exercise data</h1>
+    <p class="intro-copy">Choose an exercise to see its complete history and progress over time.</p>
+    ${renderDataExercisePicker(exercises)}
+    ${renderAnalyticsRangeSelector(allPoints)}
+    <div class="analytics-option-switch" aria-label="Cardio graph metric">
+      <button class="${durationMode ? "is-active" : ""}" data-action="set-cardio-metric" data-metric="duration">
+        Interval time
+      </button>
+      <button class="${!durationMode ? "is-active" : ""}" data-action="set-cardio-metric" data-metric="intervals">
+        Number of intervals
+      </button>
+    </div>
+
+    <section class="analytics-summary">
+      <div class="analytics-title-row">
+        <span>
+          <span class="category-tag">Cardio</span>
+          <h2>${escapeHtml(selectedExercise.name)}</h2>
+        </span>
+        <span class="analytics-muscle">${durationMode ? "Time" : "Intervals"}</span>
+      </div>
+      <div class="analytics-metrics">
+        <article class="metric-card">
+          <span>Most recent ${durationMode ? "time" : "interval count"}</span>
+          <strong>${latest ? formatMetric(latest.weight) : "—"}</strong>
+          <small>${latest ? formatDate(latest.date, { year: true }) : "No cardio history"}</small>
+        </article>
+        <article class="metric-card growth-card">
+          <span>Highest ${durationMode ? "time" : "interval count"}</span>
+          <strong>${highest === null ? "—" : formatMetric(highest)}</strong>
+          <small>Within the selected graph range</small>
+        </article>
+      </div>
+    </section>
+
+    <section class="analytics-chart-card">
+      <div class="section-heading analytics-section-heading">
+        <span>
+          <p class="eyebrow">${escapeHtml(metricLabel)}</p>
+          <h2>Progress over time</h2>
+        </span>
+        <p>Per workout</p>
+      </div>
+      ${renderWeightChart(points, {
+        emptyTitle: "No cardio sessions in this range",
+        emptyCopy: "Log this activity in a workout to begin the graph.",
+        ariaLabel: metricLabel,
+        axisTitle: durationMode ? "Minutes" : "Intervals",
+        valueSuffix: durationMode ? " min" : "",
+        valueFormatter: formatWeight,
+      })}
+    </section>
+
+    <div class="section-heading">
+      <h2>Exercise history</h2>
+      <p>${fullHistory.length} ${fullHistory.length === 1 ? "workout" : "workouts"}</p>
+    </div>
+    ${
+      fullHistory.length
+        ? `<div class="analytics-history-list">
+            ${[...fullHistory].reverse().map((item) => `
+              <article class="analytics-history-row">
+                <span class="analytics-history-date">
+                  <strong>${formatDate(item.date, { year: true })}</strong>
+                  <small>${formatTime(item.date)}</small>
+                </span>
+                <span class="analytics-set-details">
+                  <span>${item.intervalCount} ${
+                    item.intervalCount === 1 ? "interval" : "intervals"
+                  }</span>
+                  <span>${formatDuration(item.totalSeconds)} total</span>
+                </span>
+                <strong class="analytics-working-weight">${
+                  durationMode
+                    ? `${formatWeight(item.totalSeconds / 60)} min`
+                    : `${item.intervalCount}`
+                }</strong>
+              </article>
+            `).join("")}
+          </div>`
+        : `<div class="empty-state">
+            <span class="empty-state-icon">↗</span>
+            <h3>No history for this activity yet</h3>
+            <p>Log it in a workout and its interval history will appear here.</p>
+          </div>`
+    }
+  `;
+}
+
 function renderData() {
   if (state.analyticsMode === "body") return renderBodyWeightData();
   const exercises = availableAnalyticsExercises();
@@ -1590,11 +1983,18 @@ function renderData() {
   const selectedExercise = exercises.find(
     (exercise) => exercise.id === state.analyticsExerciseId
   );
+  if (selectedExercise?.category === "cardio") {
+    return renderCardioExerciseData(exercises, selectedExercise);
+  }
   const fullHistory = selectedExercise ? exerciseHistory(selectedExercise.id) : [];
   const allPoints = fullHistory.filter((item) => item.weight !== null);
   const points = filterAnalyticsRange(allPoints);
   const latest = points.at(-1);
-  const growth = compoundedMonthlyGrowth(points);
+  const growthPeriodDays =
+    state.analyticsGrowthPeriod === "biweekly" ? 14 : 365.2425 / 12;
+  const growth = compoundedPeriodGrowth(points, growthPeriodDays);
+  const growthPeriodLabel =
+    state.analyticsGrowthPeriod === "biweekly" ? "biweekly" : "monthly";
 
   return `
     <div class="topbar">
@@ -1603,44 +2003,15 @@ function renderData() {
     </div>
     ${renderAnalyticsModeSwitch()}
     <h1>Exercise data</h1>
-    <p class="intro-copy">Choose an exercise to see its complete working-weight history. Repetitions don't affect the graph.</p>
+    <p class="intro-copy">Choose an exercise to see its complete history. Strength charts use working weight; repetitions don't affect the graph.</p>
 
     ${
       exercises.length
         ? `
-          <section class="analytics-picker">
-            <label for="data-exercise-select">Exercise</label>
-            <div class="select-wrap">
-              <select id="data-exercise-select">
-                ${Object.keys(CATEGORY_META)
-                  .filter((category) => category !== "cardio")
-                  .map((category) => {
-                    const categoryExercises = exercises.filter(
-                      (exercise) => exercise.category === category
-                    );
-                    if (!categoryExercises.length) return "";
-                    return `
-                      <optgroup label="${CATEGORY_META[category].label}">
-                        ${categoryExercises
-                          .map(
-                            (exercise) => `
-                              <option value="${escapeAttr(exercise.id)}" ${
-                                exercise.id === state.analyticsExerciseId ? "selected" : ""
-                              }>
-                                ${escapeHtml(exercise.name)}
-                              </option>
-                            `
-                          )
-                          .join("")}
-                      </optgroup>
-                    `;
-                  })
-                  .join("")}
-              </select>
-            </div>
-          </section>
+          ${renderDataExercisePicker(exercises)}
 
           ${renderAnalyticsRangeSelector(allPoints.length ? allPoints : fullHistory)}
+          ${renderGrowthPeriodSwitch()}
 
           <section class="analytics-summary">
             <div class="analytics-title-row">
@@ -1660,14 +2031,18 @@ function renderData() {
                 <small>${latest ? formatDate(latest.date, { year: true }) : "No weighted sets"}</small>
               </article>
               <article class="metric-card growth-card">
-                <span>Average monthly growth</span>
+                <span>Average ${growthPeriodLabel} growth</span>
                 <strong class="${growth !== null && growth < 0 ? "is-negative" : ""}">${
                   growth === null ? "—" : `${growth >= 0 ? "+" : ""}${growth.toFixed(2)}%`
                 }</strong>
                 <small>${
                   growth === null
-                    ? "Needs two weights spanning at least 28 days"
-                    : "Compounded from first logged weight to latest"
+                    ? `Needs two weights spanning at least ${
+                        state.analyticsGrowthPeriod === "biweekly" ? 14 : 30
+                      } days`
+                    : `${
+                        growthPeriodLabel.charAt(0).toUpperCase() + growthPeriodLabel.slice(1)
+                      } change from first logged weight to latest`
                 }</small>
               </article>
             </div>
@@ -1736,7 +2111,7 @@ function renderData() {
           <div class="empty-state">
             <span class="empty-state-icon">+</span>
             <h3>Your exercise library is empty</h3>
-            <p>Add a strength exercise in Library before opening its analytics.</p>
+            <p>Add an exercise or cardio activity in Library before opening its analytics.</p>
             <button class="primary-button" data-route="library">Open library</button>
           </div>
         `
@@ -1748,7 +2123,13 @@ function renderBodyWeightData() {
   const allPoints = bodyWeightSeries();
   const points = filterAnalyticsRange(allPoints);
   const latest = points.at(-1);
-  const growth = compoundedMonthlyGrowth(points);
+  const twoWeekChange = twoWeekPercentChange(allPoints);
+  const lowest = allPoints.length
+    ? Math.min(...allPoints.map((point) => point.weight))
+    : null;
+  const highest = allPoints.length
+    ? Math.max(...allPoints.map((point) => point.weight))
+    : null;
 
   return `
     <div class="topbar">
@@ -1780,18 +2161,26 @@ function renderBodyWeightData() {
           }</small>
         </article>
         <article class="metric-card growth-card">
-          <span>Average monthly change</span>
-          <strong class="${growth !== null && growth < 0 ? "is-negative" : ""}">${
-            growth === null
+          <span>Change in the last 2 weeks</span>
+          <strong class="${twoWeekChange !== null && twoWeekChange < 0 ? "is-negative" : ""}">${
+            twoWeekChange === null
               ? "—"
-              : `${growth >= 0 ? "+" : ""}${growth.toFixed(2)}%`
+              : `${twoWeekChange >= 0 ? "+" : ""}${twoWeekChange.toFixed(2)}%`
           }</strong>
           <small>${
-            growth === null
-              ? "Needs two weights spanning at least 28 days"
-              : "Compounded across the selected graph range"
+            twoWeekChange === null
+              ? "Needs at least two entries from the last 14 days"
+              : "Percent change between your first and latest entry in the last 14 days"
           }</small>
         </article>
+      </div>
+      <div class="body-weight-extremes">
+        <span>Lowest ever <strong>${
+          lowest === null ? "—" : `${formatWeight(lowest)} ${data.unit}`
+        }</strong></span>
+        <span>Highest ever <strong>${
+          highest === null ? "—" : `${formatWeight(highest)} ${data.unit}`
+        }</strong></span>
       </div>
     </section>
 
@@ -1850,12 +2239,60 @@ function renderBodyWeightData() {
   `;
 }
 
+function renderEntryModalDependentFields(category, requestedMuscle) {
+  const muscle =
+    category === "cardio"
+      ? "activity"
+      : CATEGORY_META[category].muscles.includes(requestedMuscle)
+        ? requestedMuscle
+        : CATEGORY_META[category].muscles[0];
+  const exercises = allExercises(category, muscle);
+  return `
+    ${
+      category === "cardio"
+        ? ""
+        : `
+          <div class="form-group">
+            <label for="entry-modal-muscle">Muscle group</label>
+            <div class="select-wrap">
+              <select id="entry-modal-muscle">
+                ${CATEGORY_META[category].muscles
+                  .map(
+                    (item) =>
+                      `<option value="${escapeAttr(item)}" ${
+                        item === muscle ? "selected" : ""
+                      }>${escapeHtml(item)}</option>`
+                  )
+                  .join("")}
+              </select>
+            </div>
+          </div>
+        `
+    }
+    <div class="form-group">
+      <label for="entry-modal-exercise">${category === "cardio" ? "Activity" : "Exercise"}</label>
+      <div class="select-wrap">
+        <select id="entry-modal-exercise">
+          <option value="">Choose one…</option>
+          ${exercises
+            .map(
+              (exercise) =>
+                `<option value="${escapeAttr(exercise.id)}">${escapeHtml(exercise.name)}</option>`
+            )
+            .join("")}
+        </select>
+      </div>
+    </div>
+  `;
+}
+
 function openAddEntryModal() {
-  const category = state.selectedCategory || state.currentSession?.category || "push";
+  const category = EXERCISE_CATEGORIES.includes(state.selectedCategory)
+    ? state.selectedCategory
+    : workoutBrowseCategory(state.currentSession?.category || "push");
   const muscle = CATEGORY_META[category].muscles.includes(state.selectedMuscle)
     ? state.selectedMuscle
     : CATEGORY_META[category].muscles[0];
-  const exercises = allExercises(category, muscle);
   document.querySelector("#modal-root").innerHTML = `
     <div class="modal-backdrop" data-action="close-modal">
       <section class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="add-entry-title">
@@ -1866,7 +2303,7 @@ function openAddEntryModal() {
           <label for="entry-modal-category">Category</label>
           <div class="select-wrap">
             <select id="entry-modal-category">
-              ${Object.keys(CATEGORY_META)
+              ${EXERCISE_CATEGORIES
                 .map(
                   (item) =>
                     `<option value="${item}" ${item === category ? "selected" : ""}>${CATEGORY_META[item].label}</option>`
@@ -1875,32 +2312,8 @@ function openAddEntryModal() {
             </select>
           </div>
         </div>
-        <div class="form-group">
-          <label for="entry-modal-muscle">Muscle group</label>
-          <div class="select-wrap">
-            <select id="entry-modal-muscle">
-              ${CATEGORY_META[category].muscles
-                .map(
-                  (item) =>
-                    `<option value="${escapeAttr(item)}" ${item === muscle ? "selected" : ""}>${escapeHtml(item)}</option>`
-                )
-                .join("")}
-            </select>
-          </div>
-        </div>
-        <div class="form-group">
-          <label for="entry-modal-exercise">${category === "cardio" ? "Activity" : "Exercise"}</label>
-          <div class="select-wrap">
-            <select id="entry-modal-exercise">
-              <option value="">Choose one…</option>
-              ${exercises
-                .map(
-                  (exercise) =>
-                    `<option value="${escapeAttr(exercise.id)}">${escapeHtml(exercise.name)}${exercise.custom ? " · custom" : ""}</option>`
-                )
-                .join("")}
-            </select>
-          </div>
+        <div id="entry-modal-dependent-fields">
+          ${renderEntryModalDependentFields(category, muscle)}
         </div>
         <button class="text-button" data-action="open-custom-from-entry-modal">+ Create your own exercise</button>
         <div class="modal-actions">
@@ -1914,29 +2327,14 @@ function openAddEntryModal() {
 
 function refreshAddEntryModal(categoryChanged = false) {
   const categorySelect = document.querySelector("#entry-modal-category");
-  const muscleSelect = document.querySelector("#entry-modal-muscle");
-  const exerciseSelect = document.querySelector("#entry-modal-exercise");
-  if (!categorySelect || !muscleSelect || !exerciseSelect) return;
+  const fields = document.querySelector("#entry-modal-dependent-fields");
+  if (!categorySelect || !fields) return;
   const category = categorySelect.value;
-  if (categoryChanged) {
-    muscleSelect.innerHTML = CATEGORY_META[category].muscles
-      .map((muscle) => `<option value="${escapeAttr(muscle)}">${escapeHtml(muscle)}</option>`)
-      .join("");
-  }
-  const muscle = muscleSelect.value;
-  exerciseSelect.innerHTML = `
-    <option value="">Choose one…</option>
-    ${allExercises(category, muscle)
-      .map(
-        (exercise) =>
-          `<option value="${escapeAttr(exercise.id)}">${escapeHtml(exercise.name)}${exercise.custom ? " · custom" : ""}</option>`
-      )
-      .join("")}
-  `;
-  const label = document.querySelector('label[for="entry-modal-muscle"]');
-  const exerciseLabel = document.querySelector('label[for="entry-modal-exercise"]');
-  if (label) label.textContent = category === "cardio" ? "Type" : "Muscle group";
-  if (exerciseLabel) exerciseLabel.textContent = category === "cardio" ? "Activity" : "Exercise";
+  const muscle = categoryChanged
+    ? CATEGORY_META[category].muscles[0]
+    : document.querySelector("#entry-modal-muscle")?.value ||
+      CATEGORY_META[category].muscles[0];
+  fields.innerHTML = renderEntryModalDependentFields(category, muscle);
 }
 
 function openAddExerciseModal(category, muscle) {
@@ -1956,7 +2354,7 @@ function openAddExerciseModal(category, muscle) {
             <label for="new-exercise-category">Category</label>
             <div class="select-wrap">
               <select id="new-exercise-category" name="category">
-                ${Object.keys(CATEGORY_META)
+                ${EXERCISE_CATEGORIES
                   .map(
                     (item) =>
                       `<option value="${item}" ${item === category ? "selected" : ""}>${CATEGORY_META[item].label}</option>`
@@ -1965,8 +2363,8 @@ function openAddExerciseModal(category, muscle) {
               </select>
             </div>
           </div>
-          <div class="form-group" id="muscle-form-group">
-            <label for="new-exercise-muscle">${isCardio ? "Type" : "Muscle group"}</label>
+          <div class="form-group ${isCardio ? "is-hidden" : ""}" id="muscle-form-group">
+            <label for="new-exercise-muscle">Muscle group</label>
             <div class="select-wrap">
               <select id="new-exercise-muscle" name="muscle">
                 ${CATEGORY_META[category].muscles
@@ -1995,7 +2393,6 @@ function openSettingsModal() {
       <section class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <div class="modal-handle"></div>
         <h2 id="settings-title">Settings</h2>
-        <p>A couple of practical choices. Nothing that needs a user manual.</p>
         <div class="form-group">
           <label>Appearance</label>
           <div class="button-row">
@@ -2050,7 +2447,8 @@ function addCustomExercise(form) {
   const formData = new FormData(form);
   const name = String(formData.get("name") || "").trim();
   const category = String(formData.get("category") || "");
-  const muscle = String(formData.get("muscle") || "");
+  const muscle =
+    category === "cardio" ? "activity" : String(formData.get("muscle") || "");
   if (!name || !CATEGORY_META[category]?.muscles.includes(muscle)) return;
   const duplicate = allExercises(category, muscle, { includeHidden: true }).some(
     (exercise) => exercise.name.toLowerCase() === name.toLowerCase()
@@ -2101,12 +2499,16 @@ async function importData(file) {
     data = {
       ...defaultData(),
       ...parsed,
-      version: 3,
+      version: 4,
       workouts: parsed.workouts.map(normalizeWorkout),
       hiddenExercises: Array.isArray(parsed.hiddenExercises) ? parsed.hiddenExercises : [],
       bodyWeightHistory: Array.isArray(parsed.bodyWeightHistory)
         ? parsed.bodyWeightHistory
         : [],
+      exerciseNotes:
+        parsed.exerciseNotes && typeof parsed.exerciseNotes === "object"
+          ? parsed.exerciseNotes
+          : {},
       draft: null,
     };
     saveData();
@@ -2126,6 +2528,15 @@ function toast(message) {
   }, 2400);
 }
 
+function deleteWorkoutById(workoutId) {
+  data.workouts = data.workouts.filter((workout) => workout.id !== workoutId);
+  saveData();
+  state.route = "history";
+  state.detailId = null;
+  render();
+  toast("Workout deleted");
+}
+
 document.addEventListener("click", async (event) => {
   const target = event.target.closest("[data-action], [data-route]");
   if (!target) return;
@@ -2141,6 +2552,24 @@ document.addEventListener("click", async (event) => {
   const action = target.dataset.action;
   if (action === "start-category") startSession(target.dataset.category);
   if (action === "resume-draft") resumeDraft();
+  if (action === "confirm-replace-session") {
+    const category = state.pendingStartCategory || "push";
+    state.currentSession = null;
+    data.draft = null;
+    saveData();
+    closeModal();
+    offerPreviousSession(category);
+  }
+  if (action === "start-with-previous") {
+    const category = state.pendingStartCategory || "push";
+    const previous = data.workouts.find(
+      (workout) => workout.id === state.pendingPreviousWorkoutId
+    );
+    beginSession(category, previous || null);
+  }
+  if (action === "start-empty-session") {
+    beginSession(state.pendingStartCategory || "push");
+  }
   if (action === "leave-session") {
     persistDraft();
     state.route = "home";
@@ -2167,7 +2596,10 @@ document.addEventListener("click", async (event) => {
   if (action === "open-add-entry-modal") openAddEntryModal();
   if (action === "add-entry-from-modal") {
     const category = document.querySelector("#entry-modal-category")?.value;
-    const muscle = document.querySelector("#entry-modal-muscle")?.value;
+    const muscle =
+      category === "cardio"
+        ? "activity"
+        : document.querySelector("#entry-modal-muscle")?.value;
     const exerciseId = document.querySelector("#entry-modal-exercise")?.value;
     if (!exerciseId) {
       toast("Choose an exercise first");
@@ -2180,8 +2612,18 @@ document.addEventListener("click", async (event) => {
   if (action === "open-custom-from-entry-modal") {
     const category = document.querySelector("#entry-modal-category")?.value || "push";
     const muscle =
-      document.querySelector("#entry-modal-muscle")?.value || CATEGORY_META[category].muscles[0];
+      category === "cardio"
+        ? "activity"
+        : document.querySelector("#entry-modal-muscle")?.value ||
+          CATEGORY_META[category].muscles[0];
     openAddExerciseModal(category, muscle);
+  }
+  if (action === "collapse-entry" || action === "expand-entry") {
+    const entry = getEntry(target.dataset.entryId);
+    if (!entry) return;
+    entry.collapsed = action === "collapse-entry";
+    persistDraft();
+    render();
   }
   if (action === "remove-entry") {
     state.currentSession.exercises = state.currentSession.exercises.filter(
@@ -2263,6 +2705,15 @@ document.addEventListener("click", async (event) => {
     render();
   }
   if (action === "open-workout") {
+    const wrapper = target.closest(".history-card-wrap");
+    if (wrapper?.classList.contains("is-delete-armed")) {
+      const armedAt = Number(wrapper.dataset.armedAt || 0);
+      if (Date.now() - armedAt > 700) {
+        wrapper.classList.remove("is-delete-armed");
+        delete wrapper.dataset.armedAt;
+      }
+      return;
+    }
     state.detailId = target.dataset.workoutId;
     state.route = "detail";
     render();
@@ -2275,12 +2726,10 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "delete-workout") {
     if (!window.confirm("Delete this workout from your history?")) return;
-    data.workouts = data.workouts.filter((workout) => workout.id !== target.dataset.workoutId);
-    saveData();
-    state.route = "history";
-    state.detailId = null;
-    render();
-    toast("Workout deleted");
+    deleteWorkoutById(target.dataset.workoutId);
+  }
+  if (action === "quick-delete-workout") {
+    deleteWorkoutById(target.dataset.workoutId);
   }
   if (action === "filter-library") {
     state.libraryCategory = target.dataset.category;
@@ -2292,12 +2741,7 @@ document.addEventListener("click", async (event) => {
   if (action === "remove-library-exercise") {
     const exercise = getExerciseById(target.dataset.exerciseId);
     if (!exercise || !window.confirm(`Remove ${exercise.name} from your library? Past workouts will be kept.`)) return;
-    if (exercise.custom) {
-      data.customExercises = data.customExercises.filter((item) => item.id !== exercise.id);
-    } else if (!data.hiddenExercises.includes(exercise.id)) {
-      data.hiddenExercises.push(exercise.id);
-    }
-    saveData();
+    removeExerciseFromLibrary(exercise.id);
     render();
     toast(`${exercise.name} removed`);
   }
@@ -2369,6 +2813,15 @@ document.addEventListener("click", async (event) => {
     render();
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
+  if (action === "set-growth-period") {
+    state.analyticsGrowthPeriod =
+      target.dataset.period === "biweekly" ? "biweekly" : "monthly";
+    render();
+  }
+  if (action === "set-cardio-metric") {
+    state.cardioMetric = target.dataset.metric === "intervals" ? "intervals" : "duration";
+    render();
+  }
   if (action === "export-data") exportData();
   if (action === "import-data") document.querySelector("#import-file")?.click();
   if (action === "install-app" && state.deferredInstallPrompt) {
@@ -2377,6 +2830,51 @@ document.addEventListener("click", async (event) => {
     state.deferredInstallPrompt = null;
     render();
   }
+});
+
+let historyPress = null;
+
+function cancelHistoryPress() {
+  if (historyPress?.timer) window.clearTimeout(historyPress.timer);
+  historyPress = null;
+}
+
+document.addEventListener("pointerdown", (event) => {
+  const card = event.target.closest(".history-card");
+  if (!card || (event.button !== undefined && event.button !== 0)) return;
+  const wrapper = card.closest(".history-card-wrap");
+  if (!wrapper) return;
+  cancelHistoryPress();
+  historyPress = {
+    x: event.clientX,
+    y: event.clientY,
+    wrapper,
+    timer: window.setTimeout(() => {
+      document
+        .querySelectorAll(".history-card-wrap.is-delete-armed")
+        .forEach((item) => item.classList.remove("is-delete-armed"));
+      wrapper.classList.add("is-delete-armed");
+      wrapper.dataset.armedAt = String(Date.now());
+      navigator.vibrate?.(18);
+      historyPress = null;
+    }, 550),
+  };
+});
+
+document.addEventListener("pointermove", (event) => {
+  if (!historyPress) return;
+  if (
+    Math.abs(event.clientX - historyPress.x) > 10 ||
+    Math.abs(event.clientY - historyPress.y) > 10
+  ) {
+    cancelHistoryPress();
+  }
+});
+
+document.addEventListener("pointerup", cancelHistoryPress);
+document.addEventListener("pointercancel", cancelHistoryPress);
+document.addEventListener("contextmenu", (event) => {
+  if (event.target.closest(".history-card")) event.preventDefault();
 });
 
 document.addEventListener("input", (event) => {
@@ -2429,6 +2927,16 @@ document.addEventListener("input", (event) => {
     state.currentSession.bodyWeightUnit = data.unit;
     persistDraft();
   }
+  if (action === "update-exercise-note") {
+    const exerciseId = target.dataset.exerciseId;
+    if (!exerciseId) return;
+    if (target.value.trim()) {
+      data.exerciseNotes[exerciseId] = target.value;
+    } else {
+      delete data.exerciseNotes[exerciseId];
+    }
+    saveData();
+  }
 });
 
 document.addEventListener("change", (event) => {
@@ -2459,12 +2967,14 @@ document.addEventListener("change", (event) => {
   if (event.target.id === "new-exercise-category") {
     const category = event.target.value;
     const select = document.querySelector("#new-exercise-muscle");
+    const group = document.querySelector("#muscle-form-group");
     if (select) {
       select.innerHTML = CATEGORY_META[category].muscles
         .map((muscle) => `<option value="${escapeAttr(muscle)}">${escapeHtml(muscle)}</option>`)
         .join("");
-      document.querySelector("#muscle-form-group label").textContent =
-        category === "cardio" ? "Type" : "Muscle group";
+      group?.classList.toggle("is-hidden", category === "cardio");
+      const label = group?.querySelector("label");
+      if (label) label.textContent = "Muscle group";
     }
   }
   if (event.target.id === "entry-modal-category") refreshAddEntryModal(true);
