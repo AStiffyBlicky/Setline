@@ -2504,3 +2504,166 @@ body.light-theme .analytics-option-switch {
   background: var(--card);
   box-shadow: 0 8px 24px rgba(67, 40, 83, 0.07);
 }
+
+/* Data protection, reminders, and history entry */
+.data-safety-banner,
+.backup-reminder-card,
+.favorite-exercise-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 18px;
+  padding: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--card);
+}
+
+.data-safety-banner {
+  position: relative;
+  z-index: 3;
+  flex-wrap: wrap;
+}
+
+.data-safety-banner.is-critical {
+  border-color: var(--danger);
+}
+
+.data-safety-icon,
+.backup-reminder-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 11px;
+  background: var(--surface-3);
+  color: var(--forest);
+  font-weight: 900;
+}
+
+.data-safety-banner > span:nth-child(2),
+.backup-reminder-card > span:nth-child(2) {
+  min-width: 0;
+  flex: 1;
+}
+
+.data-safety-banner strong,
+.backup-reminder-card strong,
+.data-safety-banner small,
+.backup-reminder-card small {
+  display: block;
+}
+
+.data-safety-banner small,
+.backup-reminder-card small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.data-safety-actions,
+.backup-reminder-actions {
+  display: flex;
+  width: 100%;
+  gap: 8px;
+}
+
+.data-safety-actions button {
+  min-height: 36px;
+  flex: 1;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.backup-reminder-card {
+  flex-wrap: wrap;
+  border-color: #7654a2;
+  background:
+    radial-gradient(circle at 90% 10%, rgba(184, 132, 255, 0.18), transparent 7rem),
+    var(--card);
+}
+
+.backup-reminder-actions .primary-button {
+  flex: 1;
+}
+
+.backup-reminder-actions .text-button {
+  flex: 1;
+  text-align: center;
+}
+
+.history-create-row {
+  display: flex;
+  justify-content: flex-end;
+  margin: -12px 0 16px;
+}
+
+.history-create-row .secondary-button {
+  width: 100%;
+}
+
+.library-exercise-item {
+  cursor: pointer;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.library-item-name {
+  min-width: 0;
+  flex: 1;
+}
+
+.favorite-exercise-card {
+  justify-content: space-between;
+  margin-top: -10px;
+}
+
+.favorite-exercise-card small,
+.favorite-exercise-card strong {
+  display: block;
+}
+
+.favorite-exercise-card small {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.favorite-exercise-count {
+  color: var(--muted);
+  font-size: 10px;
+  text-align: right;
+}
+
+.body-change-controls {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin: 12px 0 18px;
+}
+
+.body-change-controls .analytics-option-switch {
+  margin: 0;
+}
+
+body.light-theme .data-safety-banner,
+body.light-theme .backup-reminder-card,
+body.light-theme .favorite-exercise-card {
+  border-color: var(--line);
+  background-color: var(--card);
+  box-shadow: 0 8px 24px rgba(67, 40, 83, 0.07);
+}
+
+body.light-theme .data-safety-banner.is-critical {
+  border-color: var(--danger);
+}

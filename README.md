@@ -2,9 +2,9 @@
 
 Setline is a mobile-first, installable workout log for push, pull, legs, core, full-body, and cardio sessions.
 
-One workout can include exercises from any category while keeping the workout type chosen at the start. It also supports per-set weight and reps (including assisted negative weights), remembered exercise defaults, copy-down controls for both, cardio intervals and notes, permanent exercise notes, current body weight, removable library exercises, previous-performance recall, and complete workout history.
+One workout can include exercises from any category while keeping the workout type chosen at the start. It also supports per-set weight and reps (including assisted negative weights), remembered exercise defaults, copy-down controls for both, cardio intervals and notes, permanent exercise notes, current body weight, removable/renameable/reassignable library exercises, previous-performance recall, backdated workout entry, and complete workout history.
 
-The **Data** tab provides strength, cardio, and body-weight analytics. Strength analytics include an expanding working-weight chart, the latest weight used, complete set history, and monthly or biweekly growth. Cardio charts can show total interval time or interval count. Body-weight analytics include two-week percentage change plus lifetime low and high values. Graphs can show all time, the last 12 months, the last month, or an individual year.
+The **Data** tab provides strength, cardio, and body-weight analytics. It identifies the most-used favorite exercise across all history. Strength analytics include an expanding working-weight chart, the latest weight used, complete set history, and monthly or biweekly growth. Cardio charts can show total interval time or interval count. Body-weight analytics can show monthly or two-week change as either weight or percentage, plus lifetime low and high values. Graphs can show all time, the last 12 months, the last month, or an individual year.
 
 History can be filtered by category, year, month, or an exact from/through date range. The app uses a light purple theme by default, with optional dark mode in Settings.
 
@@ -29,4 +29,4 @@ Then open `http://127.0.0.1:8123`.
 
 Workout data is private to the device and browser where Setline is used. It does not require an account or send data to a server. Use **Library → Export backup** periodically; **Import backup** restores that JSON file on another device.
 
-Clearing the browser's site data also clears locally stored workouts unless a backup has been exported. No browser-managed offline database can survive an intentional site-data deletion.
+Setline verifies each local write, keeps a rotating recovery snapshot, protects unreadable data from being overwritten, preserves a pre-import safety copy, and reminds users to export every 30 days. Clearing the browser's site data still clears all browser-managed copies, so exported backups remain important.

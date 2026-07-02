@@ -1,6 +1,10 @@
 const STORAGE_KEY = "setline-data-v1";
+const RECOVERY_KEY = "setline-data-v1-recovery";
+const PRE_IMPORT_KEY = "setline-data-v1-pre-import";
 const EXERCISE_CATEGORIES = ["push", "pull", "legs", "core", "cardio"];
 const WORKOUT_CATEGORIES = ["push", "pull", "legs", "core", "fullbody", "cardio"];
+const BACKUP_INTERVAL_MS = 30 * 86400000;
+const BACKUP_SNOOZE_MS = 7 * 86400000;
 
 const CATEGORY_META = {
   push: {
@@ -85,25 +89,35 @@ const state = {
   analyticsRange: "all",
   analyticsGrowthPeriod: "monthly",
   cardioMetric: "duration",
+  bodyChangePeriod: "monthly",
+  bodyChangeFormat: "weight",
   pendingStartCategory: null,
   pendingPreviousWorkoutId: null,
+  pendingWorkoutDate: null,
   deferredInstallPrompt: null,
 };
 
+let storageNotice = null;
+let storageWriteLocked = false;
+let storagePersistenceRequested = false;
 let data = loadData();
+let lastPersistedSerialized = JSON.stringify(data);
 
 function defaultData() {
   return {
-    version: 4,
+    version: 5,
     workouts: [],
     customExercises: [],
     hiddenExercises: [],
+    exerciseOverrides: {},
     draft: null,
     unit: "lb",
     currentWeight: "",
     weightUpdatedAt: null,
     bodyWeightHistory: [],
     exerciseNotes: {},
+    lastExportedAt: null,
+    backupReminderSnoozedUntil: null,
     theme: "light",
   };
 }
@@ -141,32 +155,157 @@ function normalizeWorkout(workout) {
   };
 }
 
+function normalizeSavedData(saved) {
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)) {
+    throw new Error("Stored Setline data is not an object");
+  }
+  if (
+    !Array.isArray(saved.workouts) ||
+    !Array.isArray(saved.customExercises) ||
+    !saved.workouts.every(
+      (workout) =>
+        workout &&
+        typeof workout === "object" &&
+        Array.isArray(workout.exercises)
+    )
+  ) {
+    throw new Error("Stored Setline data is missing required workout arrays");
+  }
+  return {
+    ...defaultData(),
+    ...saved,
+    version: 5,
+    workouts: Array.isArray(saved.workouts) ? saved.workouts.map(normalizeWorkout) : [],
+    customExercises: Array.isArray(saved.customExercises) ? saved.customExercises : [],
+    hiddenExercises: Array.isArray(saved.hiddenExercises) ? saved.hiddenExercises : [],
+    exerciseOverrides:
+      saved.exerciseOverrides && typeof saved.exerciseOverrides === "object"
+        ? saved.exerciseOverrides
+        : {},
+    bodyWeightHistory: Array.isArray(saved.bodyWeightHistory) ? saved.bodyWeightHistory : [],
+    exerciseNotes:
+      saved.exerciseNotes && typeof saved.exerciseNotes === "object"
+        ? saved.exerciseNotes
+        : {},
+    lastExportedAt:
+      typeof saved.lastExportedAt === "string" ? saved.lastExportedAt : null,
+    backupReminderSnoozedUntil:
+      typeof saved.backupReminderSnoozedUntil === "string"
+        ? saved.backupReminderSnoozedUntil
+        : null,
+    draft: saved.draft ? normalizeWorkout(saved.draft) : null,
+  };
+}
+
+function parseStoredData(raw) {
+  if (!raw) return null;
+  return normalizeSavedData(JSON.parse(raw));
+}
+
 function loadData() {
+  let primaryRaw = null;
+  let recoveryRaw = null;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return defaultData();
-    const saved = JSON.parse(raw);
-    return {
-      ...defaultData(),
-      ...saved,
-      version: 4,
-      workouts: Array.isArray(saved.workouts) ? saved.workouts.map(normalizeWorkout) : [],
-      customExercises: Array.isArray(saved.customExercises) ? saved.customExercises : [],
-      hiddenExercises: Array.isArray(saved.hiddenExercises) ? saved.hiddenExercises : [],
-      bodyWeightHistory: Array.isArray(saved.bodyWeightHistory) ? saved.bodyWeightHistory : [],
-      exerciseNotes:
-        saved.exerciseNotes && typeof saved.exerciseNotes === "object"
-          ? saved.exerciseNotes
-          : {},
-      draft: saved.draft ? normalizeWorkout(saved.draft) : null,
+    primaryRaw = localStorage.getItem(STORAGE_KEY);
+    recoveryRaw = localStorage.getItem(RECOVERY_KEY);
+  } catch (error) {
+    storageNotice = {
+      type: "locked",
+      message: "Setline cannot access this browser's storage. Changes are locked to protect your data.",
+      error: String(error),
+      primaryRaw,
+      recoveryRaw,
     };
-  } catch {
+    storageWriteLocked = true;
     return defaultData();
   }
+  if (primaryRaw) {
+    try {
+      return parseStoredData(primaryRaw);
+    } catch {
+      // The original value remains untouched while the recovery copy is checked.
+    }
+  }
+  if (recoveryRaw) {
+    try {
+      storageNotice = {
+        type: "recovered",
+        message: "Setline recovered your data from its automatic safety copy.",
+      };
+      return parseStoredData(recoveryRaw);
+    } catch {
+      // Both unreadable strings are preserved for a recovery download.
+    }
+  }
+  if (primaryRaw || recoveryRaw) {
+    storageNotice = {
+      type: "locked",
+      message:
+        "Setline found unreadable saved data and has locked writes so the original cannot be overwritten.",
+      primaryRaw,
+      recoveryRaw,
+    };
+    storageWriteLocked = true;
+  }
+  return defaultData();
 }
 
 function saveData() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  if (storageWriteLocked) {
+    notifyStorageFailure("Saving is locked until the storage recovery warning is resolved.");
+    return false;
+  }
+  try {
+    const serialized = JSON.stringify(data);
+    JSON.parse(serialized);
+    const previousRaw = localStorage.getItem(STORAGE_KEY);
+    if (previousRaw && previousRaw !== serialized) {
+      try {
+        parseStoredData(previousRaw);
+        localStorage.setItem(RECOVERY_KEY, previousRaw);
+      } catch {
+        // Never replace a valid recovery copy with an unreadable primary value.
+      }
+    }
+    localStorage.setItem(STORAGE_KEY, serialized);
+    if (localStorage.getItem(STORAGE_KEY) !== serialized) {
+      throw new Error("Saved data did not verify after writing");
+    }
+    lastPersistedSerialized = serialized;
+    if (storageNotice?.type === "write-failed") storageNotice = null;
+    return true;
+  } catch (error) {
+    try {
+      data = parseStoredData(lastPersistedSerialized) || defaultData();
+      if (state.currentSession) state.currentSession = data.draft;
+    } catch {
+      storageWriteLocked = true;
+    }
+    storageNotice = {
+      type: "write-failed",
+      message:
+        "Your latest change could not be saved. Setline kept the last verified copy instead.",
+      error: String(error),
+    };
+    notifyStorageFailure(storageNotice.message);
+    return false;
+  }
+}
+
+function notifyStorageFailure(message) {
+  const toastRoot = document.querySelector("#toast-root");
+  if (toastRoot) toast(message, { duration: 5200 });
+}
+
+async function requestPersistentStorage() {
+  if (storagePersistenceRequested || !navigator.storage?.persist) return;
+  storagePersistenceRequested = true;
+  try {
+    const alreadyPersistent = await navigator.storage.persisted?.();
+    if (!alreadyPersistent) await navigator.storage.persist();
+  } catch {
+    // Persistence is an optional extra; verified saves and exports remain available.
+  }
 }
 
 function uid(prefix = "id") {
@@ -244,14 +383,46 @@ function relativeDate(value) {
   return formatDate(value, { year: then.getFullYear() !== today.getFullYear() });
 }
 
+function builtInExercises() {
+  return EXERCISE_CATEGORIES.flatMap((originalCategory) =>
+    CATEGORY_META[originalCategory].muscles.flatMap((originalMuscle) =>
+      (DEFAULT_EXERCISES[originalCategory]?.[originalMuscle] || []).map(
+        (defaultName) => {
+          const id = `default-${slugify(originalCategory)}-${slugify(
+            originalMuscle
+          )}-${slugify(defaultName)}`;
+          const override = data.exerciseOverrides[id] || {};
+          const category = EXERCISE_CATEGORIES.includes(override.category)
+            ? override.category
+            : originalCategory;
+          const muscle = CATEGORY_META[category].muscles.includes(override.muscle)
+            ? override.muscle
+            : category === originalCategory
+              ? originalMuscle
+              : CATEGORY_META[category].muscles[0];
+          return {
+            id,
+            name: String(override.name || defaultName),
+            category,
+            muscle,
+            originalCategory,
+            originalMuscle,
+            defaultName,
+            custom: false,
+          };
+        }
+      )
+    )
+  );
+}
+
 function allExercises(category, muscle, options = {}) {
-  const builtIns = (DEFAULT_EXERCISES[category]?.[muscle] || []).map((name) => ({
-    id: `default-${slugify(category)}-${slugify(muscle)}-${slugify(name)}`,
-    name,
-    category,
-    muscle,
-    custom: false,
-  })).filter((exercise) => options.includeHidden || !data.hiddenExercises.includes(exercise.id));
+  const builtIns = builtInExercises()
+    .filter((exercise) => exercise.category === category && exercise.muscle === muscle)
+    .filter(
+      (exercise) =>
+        options.includeHidden || !data.hiddenExercises.includes(exercise.id)
+    );
   const custom = data.customExercises.filter(
     (exercise) => exercise.category === category && exercise.muscle === muscle
   );
@@ -285,6 +456,48 @@ function getExerciseById(exerciseId) {
   return null;
 }
 
+function compatibleExerciseCategories(exercise) {
+  return exercise.category === "cardio"
+    ? ["cardio"]
+    : ["push", "pull", "legs", "core"];
+}
+
+function updateExerciseEverywhere(exerciseId, updates) {
+  const exercise = getExerciseById(exerciseId);
+  if (!exercise) return false;
+  const name = String(updates.name || "").trim();
+  const category = String(updates.category || "");
+  const muscle = String(updates.muscle || "");
+  if (
+    !name ||
+    !compatibleExerciseCategories(exercise).includes(category) ||
+    !CATEGORY_META[category]?.muscles.includes(muscle)
+  ) {
+    return false;
+  }
+  if (exercise.custom) {
+    const custom = data.customExercises.find((item) => item.id === exerciseId);
+    if (!custom) return false;
+    custom.name = name;
+    custom.category = category;
+    custom.muscle = muscle;
+  } else {
+    data.exerciseOverrides[exerciseId] = { name, category, muscle };
+  }
+  const updateEntry = (entry) => {
+    if (entry.exerciseId !== exerciseId) return;
+    entry.name = name;
+    entry.category = category;
+    entry.muscle = muscle;
+  };
+  data.workouts.forEach((workout) => workout.exercises?.forEach(updateEntry));
+  data.draft?.exercises?.forEach(updateEntry);
+  if (state.currentSession && state.currentSession !== data.draft) {
+    state.currentSession.exercises?.forEach(updateEntry);
+  }
+  return saveData();
+}
+
 function removeExerciseFromLibrary(exerciseId) {
   const exercise = getExerciseById(exerciseId);
   if (!exercise) return null;
@@ -293,7 +506,7 @@ function removeExerciseFromLibrary(exerciseId) {
   } else if (!data.hiddenExercises.includes(exercise.id)) {
     data.hiddenExercises.push(exercise.id);
   }
-  saveData();
+  if (!saveData()) return null;
   return exercise;
 }
 
@@ -516,11 +729,17 @@ function compoundedMonthlyGrowth(points) {
   return compoundedPeriodGrowth(points, 365.2425 / 12);
 }
 
-function twoWeekPercentChange(points) {
-  const cutoff = Date.now() - 14 * 86400000;
+function bodyWeightChange(points, periodDays) {
+  const cutoff = Date.now() - periodDays * 86400000;
   const recent = points.filter((point) => point.date.getTime() >= cutoff);
   if (recent.length < 2 || recent[0].weight <= 0) return null;
-  return ((recent.at(-1).weight - recent[0].weight) / recent[0].weight) * 100;
+  const weight = recent.at(-1).weight - recent[0].weight;
+  return {
+    weight,
+    percentage: (weight / recent[0].weight) * 100,
+    first: recent[0],
+    latest: recent.at(-1),
+  };
 }
 
 function formatWeight(value) {
@@ -533,6 +752,35 @@ function formatChartDate(date) {
     day: "numeric",
     year: "2-digit",
   }).format(date);
+}
+
+function renderStorageSafetyNotice() {
+  if (!storageNotice) return "";
+  const isLocked = storageNotice.type === "locked";
+  return `
+    <section class="data-safety-banner ${isLocked ? "is-critical" : ""}" role="${
+      isLocked ? "alert" : "status"
+    }">
+      <span class="data-safety-icon">${isLocked ? "!" : "✓"}</span>
+      <span>
+        <strong>${isLocked ? "Saved data protected" : "Data safety update"}</strong>
+        <small>${escapeHtml(storageNotice.message)}</small>
+      </span>
+      <div class="data-safety-actions">
+        ${
+          isLocked
+            ? `
+              <button data-action="download-recovery-data">Download recovery file</button>
+              <button data-action="open-storage-reset">Reset options</button>
+            `
+            : `
+              <button data-action="export-data">Export backup</button>
+              <button data-action="dismiss-storage-notice">Dismiss</button>
+            `
+        }
+      </div>
+    </section>
+  `;
 }
 
 function render() {
@@ -556,6 +804,9 @@ function render() {
   if (state.route === "detail") view.innerHTML = renderDetail();
   if (state.route === "library") view.innerHTML = renderLibrary();
   if (state.route === "data") view.innerHTML = renderData();
+  if (storageNotice) {
+    view.insertAdjacentHTML("afterbegin", renderStorageSafetyNotice());
+  }
 
   nav.querySelectorAll(".nav-item").forEach((button) => {
     const activeRoute = state.route === "detail" ? "history" : state.route;
@@ -567,6 +818,45 @@ function render() {
       if (chart) chart.scrollLeft = chart.scrollWidth;
     });
   }
+}
+
+function backupReminderDue() {
+  if (!data.workouts.length) return false;
+  const snoozedUntil = data.backupReminderSnoozedUntil
+    ? new Date(data.backupReminderSnoozedUntil).getTime()
+    : 0;
+  if (snoozedUntil > Date.now()) return false;
+  if (!data.lastExportedAt) {
+    const firstWorkoutAt = Math.min(
+      ...data.workouts.map((workout) =>
+        new Date(workout.completedAt || workout.startedAt).getTime()
+      )
+    );
+    return Number.isFinite(firstWorkoutAt) && Date.now() - firstWorkoutAt >= BACKUP_INTERVAL_MS;
+  }
+  const exportedAt = new Date(data.lastExportedAt).getTime();
+  return !Number.isFinite(exportedAt) || Date.now() - exportedAt >= BACKUP_INTERVAL_MS;
+}
+
+function renderBackupReminder() {
+  if (!backupReminderDue()) return "";
+  return `
+    <section class="backup-reminder-card">
+      <span class="backup-reminder-icon">↓</span>
+      <span>
+        <strong>Time to back up Setline</strong>
+        <small>${
+          data.lastExportedAt
+            ? `Your last export was ${relativeDate(data.lastExportedAt)}.`
+            : "These workouts have not been exported yet."
+        } Save a copy outside the browser.</small>
+      </span>
+      <div class="backup-reminder-actions">
+        <button class="primary-button" data-action="export-data">Export now</button>
+        <button class="text-button" data-action="snooze-backup-reminder">Remind me in 7 days</button>
+      </div>
+    </section>
+  `;
 }
 
 function renderHome() {
@@ -587,6 +877,7 @@ function renderHome() {
     </div>
 
     <p class="eyebrow">${new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric" }).format(new Date())}</p>
+    ${renderBackupReminder()}
 
     ${
       draft
@@ -659,12 +950,36 @@ function renderHome() {
   `;
 }
 
-function createSession(category) {
+function dateInputToWorkoutIso(dateValue) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateValue || ""));
+  if (!match) return null;
+  const [, year, month, day] = match;
+  const date = new Date(Number(year), Number(month) - 1, Number(day), 12, 0, 0, 0);
+  if (
+    date.getFullYear() !== Number(year) ||
+    date.getMonth() !== Number(month) - 1 ||
+    date.getDate() !== Number(day)
+  ) {
+    return null;
+  }
+  return date.toISOString();
+}
+
+function localDateInputValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function createSession(category, workoutDate = null) {
+  const backdatedStartedAt = workoutDate ? dateInputToWorkoutIso(workoutDate) : null;
   return {
     id: uid("workout"),
     category,
-    startedAt: new Date().toISOString(),
+    startedAt: backdatedStartedAt || new Date().toISOString(),
     completedAt: null,
+    workoutDate: backdatedStartedAt ? workoutDate : null,
     notes: "",
     bodyWeight: data.currentWeight || "",
     bodyWeightUnit: data.unit,
@@ -719,15 +1034,20 @@ function clonePreviousEntry(entry) {
   };
 }
 
-function beginSession(category, previousWorkout = null) {
-  state.currentSession = createSession(category);
+function beginSession(
+  category,
+  previousWorkout = null,
+  workoutDate = state.pendingWorkoutDate
+) {
+  state.currentSession = createSession(category, workoutDate);
   if (previousWorkout) {
     state.currentSession.exercises = previousWorkout.exercises.map(clonePreviousEntry);
   }
   state.selectedCategory = workoutBrowseCategory(category);
   state.selectedMuscle = CATEGORY_META[state.selectedCategory].muscles[0];
   data.draft = state.currentSession;
-  saveData();
+  if (!saveData()) return;
+  state.pendingWorkoutDate = null;
   closeModal();
   state.route = "session";
   render();
@@ -758,7 +1078,8 @@ function offerPreviousSession(category) {
   `;
 }
 
-function startSession(category) {
+function startSession(category, workoutDate = null) {
+  state.pendingWorkoutDate = workoutDate;
   if (data.draft) {
     state.pendingStartCategory = category;
     document.querySelector("#modal-root").innerHTML = `
@@ -782,6 +1103,7 @@ function startSession(category) {
 
 function resumeDraft() {
   if (!data.draft) return;
+  state.pendingWorkoutDate = null;
   state.currentSession = data.draft;
   state.selectedCategory = workoutBrowseCategory(data.draft.category);
   state.selectedMuscle = CATEGORY_META[state.selectedCategory].muscles[0];
@@ -817,7 +1139,11 @@ function renderSession() {
       <button class="icon-button" data-action="leave-session" aria-label="Back">‹</button>
       <div class="session-title">
         <strong>${displayLabel} session</strong>
-        <span>${formatTime(session.startedAt)} · ${session.exercises.length} added</span>
+        <span>${
+          session.workoutDate
+            ? `${formatDate(session.startedAt, { year: true })} · Past workout`
+            : formatTime(session.startedAt)
+        } · ${session.exercises.length} added</span>
       </div>
       <button class="icon-button" data-action="discard-session" aria-label="Discard session">×</button>
     </header>
@@ -1279,15 +1605,25 @@ function saveWorkout() {
     toast("Add some set or interval data before saving");
     return;
   }
-  session.completedAt = new Date().toISOString();
+  session.completedAt =
+    (session.workoutDate && dateInputToWorkoutIso(session.workoutDate)) ||
+    new Date().toISOString();
   if (session.bodyWeight) {
     session.bodyWeightUnit = data.unit;
-    data.currentWeight = session.bodyWeight;
-    data.weightUpdatedAt = session.completedAt;
+    const currentWeightDate = data.weightUpdatedAt
+      ? new Date(data.weightUpdatedAt).getTime()
+      : 0;
+    if (new Date(session.completedAt).getTime() >= currentWeightDate) {
+      data.currentWeight = session.bodyWeight;
+      data.weightUpdatedAt = session.completedAt;
+    }
   }
   data.workouts.push(JSON.parse(JSON.stringify(session)));
   data.draft = null;
-  saveData();
+  if (!saveData()) {
+    render();
+    return;
+  }
   state.currentSession = null;
   state.historyFilter = session.category;
   state.route = "history";
@@ -1355,6 +1691,12 @@ function renderHistory() {
     </div>
     <h1>History</h1>
     <p class="intro-copy">Your training record</p>
+    ${renderBackupReminder()}
+    <div class="history-create-row">
+      <button class="secondary-button" data-action="open-backdated-workout">
+        + Add a past workout
+      </button>
+    </div>
 
     <div class="filter-tabs" aria-label="Filter history">
       ${["all", ...WORKOUT_CATEGORIES]
@@ -1619,7 +1961,7 @@ function renderLibrary() {
       <button class="icon-button" data-action="open-add-exercise" data-category="${category}" data-muscle="${escapeAttr(meta.muscles[0])}" aria-label="Add exercise">+</button>
     </div>
     <h1>Exercise library</h1>
-    <p class="intro-copy">Keep only the movements you use. Removing an exercise never changes your past workouts.</p>
+    <p class="intro-copy">Keep only the movements you use. Press and hold an exercise to rename or reassign it. Removing an exercise never changes your past workouts.</p>
 
     <div class="filter-tabs" aria-label="Filter exercises">
       ${EXERCISE_CATEGORIES
@@ -1649,8 +1991,10 @@ function renderLibrary() {
               exercises.length
                 ? exercises.map(
                 (exercise) => `
-                  <div class="library-item">
-                    <span>${escapeHtml(exercise.name)}</span>
+                  <div class="library-item library-exercise-item" data-library-exercise-id="${escapeAttr(
+                    exercise.id
+                  )}">
+                    <span class="library-item-name">${escapeHtml(exercise.name)}</span>
                     <button class="text-button remove-library-button" data-action="remove-library-exercise" data-exercise-id="${escapeAttr(exercise.id)}">Remove</button>
                   </div>
                 `
@@ -1678,11 +2022,20 @@ function renderLibrary() {
 
     <div class="section-heading">
       <h2>Data</h2>
-      <p>Stored on this device</p>
+      <p>${
+        data.lastExportedAt
+          ? `Last backup ${relativeDate(data.lastExportedAt)}`
+          : "No exported backup yet"
+      }</p>
     </div>
     <div class="library-controls">
       <button class="secondary-button" data-action="export-data">Export backup</button>
       <button class="secondary-button" data-action="import-data">Import backup</button>
+      ${
+        hasPreImportBackup()
+          ? `<button class="secondary-button" data-action="restore-pre-import">Restore pre-import safety copy</button>`
+          : ""
+      }
       <input id="import-file" type="file" accept="application/json" hidden />
     </div>
   `;
@@ -1854,6 +2207,52 @@ function renderGrowthPeriodSwitch() {
   `;
 }
 
+function favoriteExercise() {
+  const usage = new Map();
+  for (const workout of data.workouts) {
+    const usedAt = new Date(workout.completedAt || workout.startedAt).getTime();
+    for (const entry of workout.exercises || []) {
+      const current = usage.get(entry.exerciseId) || {
+        exerciseId: entry.exerciseId,
+        name: entry.name,
+        category: entry.category || workout.category || "push",
+        count: 0,
+        lastUsedAt: 0,
+      };
+      current.count += 1;
+      if (usedAt >= current.lastUsedAt) {
+        current.name = entry.name;
+        current.category = entry.category || current.category;
+        current.lastUsedAt = usedAt;
+      }
+      usage.set(entry.exerciseId, current);
+    }
+  }
+  return [...usage.values()].sort(
+    (a, b) =>
+      b.count - a.count ||
+      b.lastUsedAt - a.lastUsedAt ||
+      a.name.localeCompare(b.name)
+  )[0] || null;
+}
+
+function renderFavoriteExercise() {
+  const favorite = favoriteExercise();
+  return `
+    <section class="favorite-exercise-card">
+      <span>
+        <small>Favorite Exercise</small>
+        <strong>${favorite ? escapeHtml(favorite.name) : "No favorite yet"}</strong>
+      </span>
+      <span class="favorite-exercise-count">${
+        favorite
+          ? `${favorite.count} ${favorite.count === 1 ? "workout" : "workouts"}`
+          : "Log a workout to begin"
+      }</span>
+    </section>
+  `;
+}
+
 function renderCardioExerciseData(exercises, selectedExercise) {
   const fullHistory = cardioHistory(selectedExercise.id);
   const durationMode = state.cardioMetric !== "intervals";
@@ -1880,6 +2279,7 @@ function renderCardioExerciseData(exercises, selectedExercise) {
     ${renderAnalyticsModeSwitch()}
     <h1>Exercise data</h1>
     <p class="intro-copy">Choose an exercise to see its complete history and progress over time.</p>
+    ${renderFavoriteExercise()}
     ${renderDataExercisePicker(exercises)}
     ${renderAnalyticsRangeSelector(allPoints)}
     <div class="analytics-option-switch" aria-label="Cardio graph metric">
@@ -2004,6 +2404,7 @@ function renderData() {
     ${renderAnalyticsModeSwitch()}
     <h1>Exercise data</h1>
     <p class="intro-copy">Choose an exercise to see its complete history. Strength charts use working weight; repetitions don't affect the graph.</p>
+    ${renderFavoriteExercise()}
 
     ${
       exercises.length
@@ -2123,7 +2524,17 @@ function renderBodyWeightData() {
   const allPoints = bodyWeightSeries();
   const points = filterAnalyticsRange(allPoints);
   const latest = points.at(-1);
-  const twoWeekChange = twoWeekPercentChange(allPoints);
+  const periodDays = state.bodyChangePeriod === "biweekly" ? 14 : 30;
+  const change = bodyWeightChange(allPoints, periodDays);
+  const percentageMode = state.bodyChangeFormat === "percentage";
+  const changeValue =
+    change === null
+      ? "—"
+      : percentageMode
+        ? `${change.percentage >= 0 ? "+" : ""}${change.percentage.toFixed(2)}%`
+        : `${change.weight >= 0 ? "+" : ""}${formatWeight(change.weight)} <small>${
+            data.unit
+          }</small>`;
   const lowest = allPoints.length
     ? Math.min(...allPoints.map((point) => point.weight))
     : null;
@@ -2141,6 +2552,24 @@ function renderBodyWeightData() {
     <p class="intro-copy">See how your body weight changes over time using entries from Settings and completed workouts.</p>
 
     ${renderAnalyticsRangeSelector(allPoints)}
+    <div class="body-change-controls">
+      <div class="analytics-option-switch" aria-label="Body-weight change period">
+        <button class="${state.bodyChangePeriod === "monthly" ? "is-active" : ""}" data-action="set-body-change-period" data-period="monthly">
+          Monthly change
+        </button>
+        <button class="${state.bodyChangePeriod === "biweekly" ? "is-active" : ""}" data-action="set-body-change-period" data-period="biweekly">
+          Last 2 weeks
+        </button>
+      </div>
+      <div class="analytics-option-switch" aria-label="Body-weight change format">
+        <button class="${!percentageMode ? "is-active" : ""}" data-action="set-body-change-format" data-format="weight">
+          Weight value
+        </button>
+        <button class="${percentageMode ? "is-active" : ""}" data-action="set-body-change-format" data-format="percentage">
+          Percentage
+        </button>
+      </div>
+    </div>
 
     <section class="analytics-summary body-weight-summary">
       <div class="analytics-title-row">
@@ -2161,16 +2590,16 @@ function renderBodyWeightData() {
           }</small>
         </article>
         <article class="metric-card growth-card">
-          <span>Change in the last 2 weeks</span>
-          <strong class="${twoWeekChange !== null && twoWeekChange < 0 ? "is-negative" : ""}">${
-            twoWeekChange === null
-              ? "—"
-              : `${twoWeekChange >= 0 ? "+" : ""}${twoWeekChange.toFixed(2)}%`
-          }</strong>
+          <span>Change in the last ${
+            state.bodyChangePeriod === "biweekly" ? "2 weeks" : "month"
+          }</span>
+          <strong class="${change !== null && change.weight < 0 ? "is-negative" : ""}">${changeValue}</strong>
           <small>${
-            twoWeekChange === null
-              ? "Needs at least two entries from the last 14 days"
-              : "Percent change between your first and latest entry in the last 14 days"
+            change === null
+              ? `Needs at least two entries from the last ${periodDays} days`
+              : `${
+                  percentageMode ? "Percentage" : "Weight"
+                } difference between your first and latest entry in this period`
           }</small>
         </article>
       </div>
@@ -2344,7 +2773,7 @@ function openAddExerciseModal(category, muscle) {
       <section class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="add-exercise-title">
         <div class="modal-handle"></div>
         <h2 id="add-exercise-title">New ${isCardio ? "activity" : "exercise"}</h2>
-        <p>Add it once and it will be waiting in your library every time.</p>
+        <p>Add exercise to your library.</p>
         <form id="add-exercise-form">
           <div class="form-group">
             <label for="new-exercise-name">${isCardio ? "Activity name" : "Exercise name"}</label>
@@ -2385,6 +2814,109 @@ function openAddExerciseModal(category, muscle) {
     </div>
   `;
   requestAnimationFrame(() => document.querySelector("#new-exercise-name")?.focus());
+}
+
+function renderEditExerciseMuscles(category, selectedMuscle) {
+  return CATEGORY_META[category].muscles
+    .map(
+      (muscle) =>
+        `<option value="${escapeAttr(muscle)}" ${
+          muscle === selectedMuscle ? "selected" : ""
+        }>${escapeHtml(muscle)}</option>`
+    )
+    .join("");
+}
+
+function openEditExerciseModal(exerciseId) {
+  const exercise = getExerciseById(exerciseId);
+  if (!exercise) return;
+  const categories = compatibleExerciseCategories(exercise);
+  document.querySelector("#modal-root").innerHTML = `
+    <div class="modal-backdrop" data-action="close-modal">
+      <section class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="edit-exercise-title">
+        <div class="modal-handle"></div>
+        <h2 id="edit-exercise-title">Edit exercise</h2>
+        <p>This updates the exercise name and category everywhere it appears, including workout history. Workout types stay unchanged.</p>
+        <div class="form-group">
+          <label for="edit-exercise-name">Exercise name</label>
+          <input id="edit-exercise-name" class="text-input" maxlength="70" value="${escapeAttr(
+            exercise.name
+          )}" />
+        </div>
+        <div class="form-group">
+          <label for="edit-exercise-category">Category</label>
+          <div class="select-wrap">
+            <select id="edit-exercise-category">
+              ${categories
+                .map(
+                  (category) =>
+                    `<option value="${category}" ${
+                      category === exercise.category ? "selected" : ""
+                    }>${CATEGORY_META[category].label}</option>`
+                )
+                .join("")}
+            </select>
+          </div>
+        </div>
+        <div class="form-group ${
+          exercise.category === "cardio" ? "is-hidden" : ""
+        }" id="edit-exercise-muscle-group">
+          <label for="edit-exercise-muscle">Muscle group</label>
+          <div class="select-wrap">
+            <select id="edit-exercise-muscle">
+              ${renderEditExerciseMuscles(exercise.category, exercise.muscle)}
+            </select>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="secondary-button" data-action="close-modal">Cancel</button>
+          <button class="primary-button" data-action="save-exercise-edit" data-exercise-id="${escapeAttr(
+            exercise.id
+          )}">Save changes</button>
+        </div>
+      </section>
+    </div>
+  `;
+  requestAnimationFrame(() => document.querySelector("#edit-exercise-name")?.focus());
+}
+
+function openBackdatedWorkoutModal() {
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  document.querySelector("#modal-root").innerHTML = `
+    <div class="modal-backdrop" data-action="close-modal">
+      <section class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="past-workout-title">
+        <div class="modal-handle"></div>
+        <h2 id="past-workout-title">Add a past workout</h2>
+        <p>Choose the date and workout type. You can enter exercises and sets normally afterward.</p>
+        <div class="form-group">
+          <label for="past-workout-date">Workout date</label>
+          <input
+            id="past-workout-date"
+            class="text-input"
+            type="date"
+            max="${localDateInputValue()}"
+            value="${localDateInputValue(yesterday)}"
+          />
+        </div>
+        <div class="form-group">
+          <label for="past-workout-category">Workout type</label>
+          <div class="select-wrap">
+            <select id="past-workout-category">
+              ${WORKOUT_CATEGORIES.map(
+                (category) =>
+                  `<option value="${category}">${CATEGORY_META[category].label}</option>`
+              ).join("")}
+            </select>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="secondary-button" data-action="close-modal">Cancel</button>
+          <button class="primary-button" data-action="start-backdated-workout">Continue</button>
+        </div>
+      </section>
+    </div>
+  `;
 }
 
 function openSettingsModal() {
@@ -2465,7 +2997,10 @@ function addCustomExercise(form) {
     custom: true,
   };
   data.customExercises.push(exercise);
-  saveData();
+  if (!saveData()) {
+    render();
+    return;
+  }
   if (state.route === "session") {
     state.selectedCategory = category;
     state.selectedMuscle = muscle;
@@ -2475,17 +3010,68 @@ function addCustomExercise(form) {
   toast(`${name} added`);
 }
 
-function exportData() {
-  const blob = new Blob([JSON.stringify({ ...data, draft: null }, null, 2)], {
+function downloadJsonFile(contents, filename) {
+  const blob = new Blob([contents], {
     type: "application/json",
   });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `setline-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  anchor.download = filename;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+function exportData() {
+  const exportedAt = new Date().toISOString();
+  data.lastExportedAt = exportedAt;
+  data.backupReminderSnoozedUntil = null;
+  saveData();
+  downloadJsonFile(
+    JSON.stringify({ ...data, draft: null }, null, 2),
+    `setline-backup-${exportedAt.slice(0, 10)}.json`
+  );
+  render();
   toast("Backup exported");
+}
+
+function hasPreImportBackup() {
+  try {
+    return Boolean(parseStoredData(localStorage.getItem(PRE_IMPORT_KEY)));
+  } catch {
+    return false;
+  }
+}
+
+function restorePreImportBackup() {
+  let restored;
+  try {
+    restored = parseStoredData(localStorage.getItem(PRE_IMPORT_KEY));
+  } catch {
+    restored = null;
+  }
+  if (!restored) {
+    toast("No readable pre-import safety copy is available");
+    return;
+  }
+  if (!window.confirm("Restore the safety copy created before your last import? Your current data will become the new safety copy.")) return;
+  try {
+    const currentRaw = localStorage.getItem(STORAGE_KEY) || lastPersistedSerialized;
+    localStorage.setItem(PRE_IMPORT_KEY, currentRaw);
+  } catch {
+    toast("Could not preserve the current data, so the restore was cancelled");
+    return;
+  }
+  const currentData = data;
+  data = restored;
+  data.draft = null;
+  if (!saveData()) {
+    data = currentData;
+    return;
+  }
+  state.currentSession = null;
+  render();
+  toast("Pre-import safety copy restored");
 }
 
 async function importData(file) {
@@ -2496,22 +3082,21 @@ async function importData(file) {
       throw new Error("Invalid Setline backup");
     }
     if (!window.confirm("Replace the workouts and exercise library on this device with this backup?")) return;
-    data = {
-      ...defaultData(),
-      ...parsed,
-      version: 4,
-      workouts: parsed.workouts.map(normalizeWorkout),
-      hiddenExercises: Array.isArray(parsed.hiddenExercises) ? parsed.hiddenExercises : [],
-      bodyWeightHistory: Array.isArray(parsed.bodyWeightHistory)
-        ? parsed.bodyWeightHistory
-        : [],
-      exerciseNotes:
-        parsed.exerciseNotes && typeof parsed.exerciseNotes === "object"
-          ? parsed.exerciseNotes
-          : {},
-      draft: null,
-    };
-    saveData();
+    const nextData = normalizeSavedData({ ...parsed, draft: null });
+    const currentRaw = localStorage.getItem(STORAGE_KEY) || lastPersistedSerialized;
+    try {
+      localStorage.setItem(PRE_IMPORT_KEY, currentRaw);
+    } catch {
+      toast("Import cancelled because Setline could not create a safety copy first");
+      return;
+    }
+    const currentData = data;
+    data = nextData;
+    if (!saveData()) {
+      data = currentData;
+      return;
+    }
+    state.currentSession = null;
     render();
     toast("Backup restored");
   } catch {
@@ -2519,18 +3104,77 @@ async function importData(file) {
   }
 }
 
-function toast(message) {
+function downloadRecoveryData() {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    explanation:
+      "Raw Setline browser values preserved after a storage integrity warning.",
+    primary: storageNotice?.primaryRaw ?? null,
+    recovery: storageNotice?.recoveryRaw ?? null,
+    lastVerifiedInMemory: lastPersistedSerialized,
+  };
+  downloadJsonFile(
+    JSON.stringify(payload, null, 2),
+    `setline-recovery-${new Date().toISOString().slice(0, 10)}.json`
+  );
+  toast("Recovery file downloaded");
+}
+
+function openStorageResetModal() {
+  document.querySelector("#modal-root").innerHTML = `
+    <div class="modal-backdrop">
+      <section class="modal-sheet confirm-sheet" role="dialog" aria-modal="true" aria-labelledby="storage-reset-title">
+        <div class="modal-handle"></div>
+        <h2 id="storage-reset-title">Permanently reset local Setline data?</h2>
+        <p>Download the recovery file first. Resetting removes the unreadable original and starts an empty library history on this device.</p>
+        <div class="modal-actions stacked-actions">
+          <button class="danger-button" data-action="confirm-storage-reset">Permanently reset data</button>
+          <button class="secondary-button" data-action="close-modal">Cancel</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function resetCorruptedStorage() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(RECOVERY_KEY);
+    localStorage.removeItem(PRE_IMPORT_KEY);
+  } catch {
+    notifyStorageFailure("The browser would not allow Setline to reset its storage.");
+    return;
+  }
+  storageWriteLocked = false;
+  storageNotice = null;
+  data = defaultData();
+  lastPersistedSerialized = JSON.stringify(data);
+  state.currentSession = null;
+  if (!saveData()) return;
+  closeModal();
+  state.route = "home";
+  render();
+  toast("Setline storage reset");
+}
+
+function toast(message, options = {}) {
   const root = document.querySelector("#toast-root");
+  if (!root) return;
   root.innerHTML = `<div class="toast">${escapeHtml(message)}</div>`;
   window.clearTimeout(toast.timer);
   toast.timer = window.setTimeout(() => {
     root.innerHTML = "";
-  }, 2400);
+  }, options.duration || 2400);
 }
 
 function deleteWorkoutById(workoutId) {
+  const workout = data.workouts.find((item) => item.id === workoutId);
+  if (!workout) return;
   data.workouts = data.workouts.filter((workout) => workout.id !== workoutId);
-  saveData();
+  if (!saveData()) {
+    render();
+    return;
+  }
   state.route = "history";
   state.detailId = null;
   render();
@@ -2538,6 +3182,7 @@ function deleteWorkoutById(workoutId) {
 }
 
 document.addEventListener("click", async (event) => {
+  requestPersistentStorage();
   const target = event.target.closest("[data-action], [data-route]");
   if (!target) return;
 
@@ -2551,12 +3196,33 @@ document.addEventListener("click", async (event) => {
 
   const action = target.dataset.action;
   if (action === "start-category") startSession(target.dataset.category);
+  if (action === "open-backdated-workout") openBackdatedWorkoutModal();
+  if (action === "start-backdated-workout") {
+    const dateValue = document.querySelector("#past-workout-date")?.value || "";
+    const category =
+      document.querySelector("#past-workout-category")?.value || "push";
+    const workoutIso = dateInputToWorkoutIso(dateValue);
+    const endOfToday = new Date();
+    endOfToday.setHours(23, 59, 59, 999);
+    if (
+      !workoutIso ||
+      new Date(workoutIso).getTime() > endOfToday.getTime() ||
+      !WORKOUT_CATEGORIES.includes(category)
+    ) {
+      toast("Choose a valid date that is not in the future");
+      return;
+    }
+    startSession(category, dateValue);
+  }
   if (action === "resume-draft") resumeDraft();
   if (action === "confirm-replace-session") {
     const category = state.pendingStartCategory || "push";
     state.currentSession = null;
     data.draft = null;
-    saveData();
+    if (!saveData()) {
+      render();
+      return;
+    }
     closeModal();
     offerPreviousSession(category);
   }
@@ -2579,7 +3245,10 @@ document.addEventListener("click", async (event) => {
     if (!window.confirm("Discard this unfinished workout?")) return;
     state.currentSession = null;
     data.draft = null;
-    saveData();
+    if (!saveData()) {
+      render();
+      return;
+    }
     state.route = "home";
     render();
   }
@@ -2738,10 +3407,42 @@ document.addEventListener("click", async (event) => {
   if (action === "open-add-exercise") {
     openAddExerciseModal(target.dataset.category, target.dataset.muscle);
   }
+  if (action === "save-exercise-edit") {
+    const exercise = getExerciseById(target.dataset.exerciseId);
+    const name = document.querySelector("#edit-exercise-name")?.value.trim() || "";
+    const category = document.querySelector("#edit-exercise-category")?.value || "";
+    const muscle =
+      category === "cardio"
+        ? "activity"
+        : document.querySelector("#edit-exercise-muscle")?.value || "";
+    if (!exercise || !name || !CATEGORY_META[category]?.muscles.includes(muscle)) {
+      toast("Enter a valid exercise name and category");
+      return;
+    }
+    const duplicate = allExercises(category, muscle, { includeHidden: true }).some(
+      (item) =>
+        item.id !== exercise.id && item.name.toLowerCase() === name.toLowerCase()
+    );
+    if (duplicate) {
+      toast(`${name} already exists in that group`);
+      return;
+    }
+    if (!updateExerciseEverywhere(exercise.id, { name, category, muscle })) {
+      render();
+      return;
+    }
+    state.libraryCategory = category;
+    closeModal();
+    render();
+    toast(`${name} updated everywhere`);
+  }
   if (action === "remove-library-exercise") {
     const exercise = getExerciseById(target.dataset.exerciseId);
     if (!exercise || !window.confirm(`Remove ${exercise.name} from your library? Past workouts will be kept.`)) return;
-    removeExerciseFromLibrary(exercise.id);
+    if (!removeExerciseFromLibrary(exercise.id)) {
+      render();
+      return;
+    }
     render();
     toast(`${exercise.name} removed`);
   }
@@ -2752,7 +3453,10 @@ document.addEventListener("click", async (event) => {
       .filter((exercise) => !exercise.custom)
       .map((exercise) => exercise.id);
     data.hiddenExercises = data.hiddenExercises.filter((id) => !defaultIds.includes(id));
-    saveData();
+    if (!saveData()) {
+      render();
+      return;
+    }
     render();
     toast("Removed exercises restored");
   }
@@ -2763,7 +3467,11 @@ document.addEventListener("click", async (event) => {
   if (action === "open-settings") openSettingsModal();
   if (action === "set-theme") {
     data.theme = target.dataset.theme === "dark" ? "dark" : "light";
-    saveData();
+    if (!saveData()) {
+      render();
+      openSettingsModal();
+      return;
+    }
     render();
     openSettingsModal();
   }
@@ -2774,7 +3482,11 @@ document.addEventListener("click", async (event) => {
       );
     }
     data.unit = target.dataset.unit;
-    saveData();
+    if (!saveData()) {
+      render();
+      openSettingsModal();
+      return;
+    }
     openSettingsModal();
     toast(`Using ${data.unit}`);
   }
@@ -2795,7 +3507,11 @@ document.addEventListener("click", async (event) => {
         unit: data.unit,
       });
     }
-    saveData();
+    if (!saveData()) {
+      render();
+      openSettingsModal();
+      return;
+    }
     closeModal();
     render();
     toast(value ? "Current weight saved" : "Current weight cleared");
@@ -2803,7 +3519,11 @@ document.addEventListener("click", async (event) => {
   if (action === "clear-current-weight") {
     data.currentWeight = "";
     data.weightUpdatedAt = null;
-    saveData();
+    if (!saveData()) {
+      render();
+      openSettingsModal();
+      return;
+    }
     closeModal();
     render();
     toast("Current weight cleared");
@@ -2822,6 +3542,35 @@ document.addEventListener("click", async (event) => {
     state.cardioMetric = target.dataset.metric === "intervals" ? "intervals" : "duration";
     render();
   }
+  if (action === "set-body-change-period") {
+    state.bodyChangePeriod =
+      target.dataset.period === "biweekly" ? "biweekly" : "monthly";
+    render();
+  }
+  if (action === "set-body-change-format") {
+    state.bodyChangeFormat =
+      target.dataset.format === "percentage" ? "percentage" : "weight";
+    render();
+  }
+  if (action === "snooze-backup-reminder") {
+    data.backupReminderSnoozedUntil = new Date(
+      Date.now() + BACKUP_SNOOZE_MS
+    ).toISOString();
+    if (!saveData()) {
+      render();
+      return;
+    }
+    render();
+    toast("Backup reminder snoozed for 7 days");
+  }
+  if (action === "dismiss-storage-notice") {
+    storageNotice = null;
+    render();
+  }
+  if (action === "download-recovery-data") downloadRecoveryData();
+  if (action === "open-storage-reset") openStorageResetModal();
+  if (action === "confirm-storage-reset") resetCorruptedStorage();
+  if (action === "restore-pre-import") restorePreImportBackup();
   if (action === "export-data") exportData();
   if (action === "import-data") document.querySelector("#import-file")?.click();
   if (action === "install-app" && state.deferredInstallPrompt) {
@@ -2875,6 +3624,50 @@ document.addEventListener("pointerup", cancelHistoryPress);
 document.addEventListener("pointercancel", cancelHistoryPress);
 document.addEventListener("contextmenu", (event) => {
   if (event.target.closest(".history-card")) event.preventDefault();
+});
+
+let libraryPress = null;
+
+function cancelLibraryPress() {
+  if (libraryPress?.timer) window.clearTimeout(libraryPress.timer);
+  libraryPress = null;
+}
+
+document.addEventListener("pointerdown", (event) => {
+  const item = event.target.closest(".library-exercise-item");
+  if (
+    !item ||
+    event.target.closest("button") ||
+    (event.button !== undefined && event.button !== 0)
+  ) {
+    return;
+  }
+  cancelLibraryPress();
+  libraryPress = {
+    x: event.clientX,
+    y: event.clientY,
+    timer: window.setTimeout(() => {
+      openEditExerciseModal(item.dataset.libraryExerciseId);
+      navigator.vibrate?.(18);
+      libraryPress = null;
+    }, 550),
+  };
+});
+
+document.addEventListener("pointermove", (event) => {
+  if (!libraryPress) return;
+  if (
+    Math.abs(event.clientX - libraryPress.x) > 10 ||
+    Math.abs(event.clientY - libraryPress.y) > 10
+  ) {
+    cancelLibraryPress();
+  }
+});
+
+document.addEventListener("pointerup", cancelLibraryPress);
+document.addEventListener("pointercancel", cancelLibraryPress);
+document.addEventListener("contextmenu", (event) => {
+  if (event.target.closest(".library-exercise-item")) event.preventDefault();
 });
 
 document.addEventListener("input", (event) => {
@@ -2976,6 +3769,18 @@ document.addEventListener("change", (event) => {
       const label = group?.querySelector("label");
       if (label) label.textContent = "Muscle group";
     }
+  }
+  if (event.target.id === "edit-exercise-category") {
+    const category = event.target.value;
+    const muscleSelect = document.querySelector("#edit-exercise-muscle");
+    const group = document.querySelector("#edit-exercise-muscle-group");
+    if (muscleSelect) {
+      muscleSelect.innerHTML = renderEditExerciseMuscles(
+        category,
+        CATEGORY_META[category].muscles[0]
+      );
+    }
+    group?.classList.toggle("is-hidden", category === "cardio");
   }
   if (event.target.id === "entry-modal-category") refreshAddEntryModal(true);
   if (event.target.id === "entry-modal-muscle") refreshAddEntryModal(false);
